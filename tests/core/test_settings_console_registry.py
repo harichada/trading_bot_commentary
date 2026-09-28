@@ -90,3 +90,13 @@ def test_env_shadowed(monkeypatch):
     monkeypatch.setenv("RISK_PER_TRADE_PCT", "0.01")
     assert sc.env_shadowed(knob) is True
     assert sc.env_shadowed(sc.KNOB_BY_KEY["max_positions"]) is False   # no env name
+
+
+def test_classify_csv_none_old_is_tighten():
+    knob = sc.KNOB_BY_KEY["fit_lane_live_entries_enabled"]
+    assert sc.classify(knob, None, ("mr_20d",)) == "tighten"
+
+
+def test_money_rejects_nan():
+    with pytest.raises(ValueError):
+        sc.coerce(sc.KNOB_BY_KEY["bot_capital_allocation"], "nan", ceiling=5000)

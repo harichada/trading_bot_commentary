@@ -100,6 +100,8 @@ KNOBS: tuple[Knob, ...] = (
     Knob(
         key="fit_lanes_enabled", yaml_path="trading.fit_lanes_enabled",
         env_name="FIT_LANES_ENABLED", kind="csv", group="lanes",
+        # `allowed` is a deliberate extension of the brief: the value is still
+        # validated even though the API refuses writes (restart_required).
         label="Fit lanes enabled", loosen="add", allowed=KNOWN_FIT_FAMILIES,
         restart_required=True,
     ),
@@ -138,8 +140,9 @@ def _coerce_money(knob: Knob, raw: Any, ceiling: float | None) -> float:
     except (TypeError, ValueError):
         raise ValueError(f"{knob.label} must be a positive number")
     limit = DEFAULT_ALLOCATION_CEILING if ceiling is None else ceiling
-    if value <= 0:
-        raise ValueError(f"{knob.label} must be greater than 0")
+    floor = 0.0 if knob.minimum is None else float(knob.minimum)
+    if not value > floor or value != value:
+        raise ValueError(f"{knob.label} must be greater than {floor:g}")
     if value > limit:
         raise ValueError(f"{knob.label} must not exceed the allocation ceiling of {limit}")
     return value
@@ -266,6 +269,10 @@ def _classify_bool(knob: Knob, old: Any, new: Any) -> str:
 
 
 def _classify_csv(old: Any, new: Any) -> str:
+    # No prior value: nothing can be "added" to, so the write is a tighten,
+    # consistent with the numeric and bool classifiers (review round 0).
+    if old is None:
+        return "tighten"
     old_set = set(old) if old else set()
     new_set = set(new) if new else set()
     if old_set == new_set:
