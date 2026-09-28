@@ -2865,11 +2865,11 @@ class TradingEngineWithCommentary:
                 return False
                 
         except BrokerTimeoutError as e:
-            # v-wedge-fix-2026-09-28 fix round 2: the close order call did not
-            # answer. Leave the position exactly as it is and try again next
-            # cycle — its GTC OCO is still resting at the broker, so the stop
-            # and target remain live while we are unsure about this close.
-            self._audit("position_manager", position.symbol, "hold",
+            # v-wedge-fix-2026-09-28 fix round 2 (re-review): the close order call did not
+            # answer. The OCO bracket was already cancelled above, and the caller promotes the
+            # position to ZOMBIE on a False return — so it has NO broker-side protection and no
+            # software exits until the operator resolves it. Say so, loudly and truthfully.
+            self._audit("position_manager", position.symbol, "zombie_pending",
                         "broker_timeout_close",
                         site=e.site, timeout_sec=e.timeout,
                         qty=getattr(position, 'quantity', 0))
@@ -2879,9 +2879,10 @@ class TradingEngineWithCommentary:
                 symbol=position.symbol,
                 title="⏱️ Broker Timeout on Close",
                 message=(
-                    f"Schwab did not answer the close order within "
-                    f"{e.timeout:.0f}s. Position kept (its bracket is still "
-                    f"resting at the broker); retrying next cycle."
+                    f"Schwab did not answer the close order within {e.timeout:.0f}s. "
+                    f"The bracket was already cancelled — this position has NO broker-side "
+                    f"protection and will be marked ZOMBIE (no automatic exits). OPERATOR "
+                    f"ACTION REQUIRED: check the order at Schwab and close manually."
                 ),
                 importance=10,
             ))

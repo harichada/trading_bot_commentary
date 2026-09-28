@@ -677,8 +677,11 @@ class StockScreener:
             # no timeout at all. A timeout raises BrokerTimeoutError, which the
             # handler below turns into "no quote for this symbol" — the same
             # degradation any other quote failure already produced.
+            # Quote budget (3 s), not the 15 s broker budget: this runs on the event loop
+            # once per candidate symbol, so the budget multiplies by the candidate count.
             response = broker_call_sync(
                 self.client.get_quote, symbol, site="screener_quote",
+                timeout=Config().QUOTE_FETCH_TIMEOUT_SEC,
             )
             if response.status_code == 200:
                 data = response.json()
