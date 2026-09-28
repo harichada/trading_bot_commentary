@@ -174,3 +174,56 @@ def test_read_audit_limit_zero_returns_empty(tmp_path):
     store.submit_change(m, FakeCfg(), str(tmp_path), "risk_per_trade_pct", "0.005",
                         now=_mon(), actor="t", reason="cut risk")
     assert store.read_audit(str(tmp_path), limit=0) == []
+
+
+class ValidatingManager(FakeManager):
+    """Mimics ConfigManager: exposes `config` and `validate_candidate`."""
+    def __init__(self, data=None):
+        super().__init__(data)
+        self.config = {"schwab": {}, "trading": {}, "commentary": {}, "technical_analysis": {}}
+    def update(self, key, value):
+        super().update(key, value)
+        node = self.config
+        parts = key.split(".")
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+        node[parts[-1]] = value
+    @staticmethod
+    def validate_candidate(config):
+        v = config.get("trading", {}).get("max_positions")
+        if v is not None and not (1 <= v <= 10):
+            raise ValueError("Max positions must be 1-10 (test band)")
+
+
+def test_submit_rejects_value_the_config_validator_refuses(tmp_path):
+    m = ValidatingManager()
+    r = store.submit_change(m, FakeCfg(), str(tmp_path), "max_positions", 3, now=_mon(), actor="t", reason="")
+    assert r.status == "applied" and m.config["trading"]["max_positions"] == 3
+    # 20 passes the registry (1..50) but not the manager's band → rejected, nothing written
+    r = store.submit_change(m, FakeCfg(), str(tmp_path), "max_positions", 20, now=_mon(), actor="t", reason="")
+    assert r.status == "rejected" and r.reason.startswith("config_validation")
+    assert m.config["trading"]["max_positions"] == 3
+    assert store.list_pending(str(tmp_path)) == []
+
+
+def test_promotion_revalidates_against_todays_ceiling(tmp_path):
+    m = FakeManager({"trading.settings_console.allocation_ceiling": 5000})
+    cfg = FakeCfg(); cfg.BOT_CAPITAL_ALLOCATION = 3000.0
+    r = store.submit_change(m, cfg, str(tmp_path), "bot_capital_allocation", 4500, now=_mon(), actor="t", reason="")
+    assert r.status == "pending"
+    m.data["trading.settings_console.allocation_ceiling"] = 4000   # lowered overnight
+    applied = store.promote_pending(m, str(tmp_path), now=datetime(2026, 9, 29, 9, 30, tzinfo=ET))
+    assert applied == []
+    assert "trading.bot_capital_allocation" not in m.data
+    assert store.list_pending(str(tmp_path)) == []          # dropped, not retried forever
+    assert store.read_audit(str(tmp_path))[-1]["event"] == "promotion_rejected"
+
+
+def test_promote_time_comes_from_cfg(tmp_path):
+    m = FakeManager()
+    cfg = FakeCfg(); cfg.SETTINGS_PROMOTE_TIME_ET = "09:31"
+    r = store.submit_change(m, cfg, str(tmp_path), "max_positions", 8, now=_mon(8, 0), actor="t", reason="")
+    assert r.status == "pending" and r.effective_at.startswith("2026-09-28T09:31")
+    assert store.promote_time_of(FakeCfg()) == (9, 25)      # attribute absent → default
+    cfg.SETTINGS_PROMOTE_TIME_ET = "garbage"
+    assert store.promote_time_of(cfg) == (9, 25)

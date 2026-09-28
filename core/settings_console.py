@@ -50,12 +50,15 @@ KNOBS: tuple[Knob, ...] = (
     Knob(
         key="risk_per_trade_pct", yaml_path="trading.risk_per_trade_pct",
         env_name="RISK_PER_TRADE_PCT", kind="fraction", group="risk",
-        label="Risk per trade (%)", loosen="increase", minimum=0.0, maximum=1.0,
+        # 5% per trade is the console's hard cap; anything larger is file-only.
+        label="Risk per trade (%)", loosen="increase", minimum=0.0, maximum=0.05,
     ),
     Knob(
         key="max_daily_loss", yaml_path="trading.max_daily_loss",
         env_name="MAX_DAILY_LOSS", kind="fraction", group="risk",
-        label="Max daily loss (%)", loosen="increase", minimum=0.0, maximum=1.0,
+        # Bounds mirror ConfigManager.validate_candidate (1%-20%): a value
+        # outside that band would stop the bot from starting next time.
+        label="Max daily loss (%)", loosen="increase", minimum=0.01, maximum=0.20,
     ),
     Knob(
         key="max_positions", yaml_path="trading.max_positions",
@@ -128,9 +131,11 @@ def _coerce_fraction(knob: Knob, raw: Any) -> float:
         value = float(raw)
     except (TypeError, ValueError):
         raise ValueError(f"{knob.label} must be a number between {knob.minimum} and {knob.maximum}")
-    # Fraction knobs use an open-at-zero, closed-at-max range: (minimum, maximum].
-    if value != value or value <= knob.minimum or value > knob.maximum:
-        raise ValueError(f"{knob.label} must be greater than {knob.minimum} and at most {knob.maximum} (got {raw!r})")
+    # Fraction knobs: open at zero (0 switches a limit off), closed at both
+    # ends when the registry sets a positive floor: [minimum, maximum].
+    floor_ok = value >= knob.minimum if knob.minimum > 0 else value > knob.minimum
+    if value != value or not floor_ok or value > knob.maximum:
+        raise ValueError(f"{knob.label} must be between {knob.minimum} and {knob.maximum} (got {raw!r})")
     return value
 
 

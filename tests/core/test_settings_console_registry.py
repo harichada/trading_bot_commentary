@@ -20,8 +20,13 @@ def test_fraction_rejects_out_of_range(raw):
         sc.coerce(sc.KNOB_BY_KEY["risk_per_trade_pct"], raw)
 
 def test_fraction_accepts_edge():
-    assert sc.coerce(sc.KNOB_BY_KEY["risk_per_trade_pct"], "1") == 1.0
+    assert sc.coerce(sc.KNOB_BY_KEY["risk_per_trade_pct"], "0.05") == 0.05
     assert sc.coerce(sc.KNOB_BY_KEY["max_daily_loss"], 0.03) == 0.03
+    # bounds mirror ConfigManager.validate_candidate: 1%-20% daily loss, <=5% per trade
+    assert sc.coerce(sc.KNOB_BY_KEY["max_daily_loss"], "0.01") == 0.01
+    for knob, bad in (("max_daily_loss", 0.005), ("max_daily_loss", 0.25), ("risk_per_trade_pct", 0.06)):
+        with pytest.raises(ValueError):
+            sc.coerce(sc.KNOB_BY_KEY[knob], bad)
 
 def test_money_respects_ceiling():
     knob = sc.KNOB_BY_KEY["bot_capital_allocation"]

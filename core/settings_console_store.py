@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterator
 
+from core.settings_console_rules import (PROMOTE_TIME_ET, candidate_error,  # noqa: F401
+                                         next_promotion, promote_time_of)
 from core.settings_console import (ALLOCATION_CEILING_PATH,
                                     DEFAULT_ALLOCATION_CEILING, KNOB_BY_KEY,
                                     classify, coerce, effective_value,
@@ -38,8 +40,6 @@ logger = logging.getLogger(__name__)
 
 PENDING_FILE = "pending_settings.json"
 AUDIT_FILE = "settings_audit.ndjson"
-PROMOTE_TIME_ET = (9, 25)
-
 BLOCK_NEW_ENTRIES_PATH = "trading.block_new_entries"
 _BLOCK_KEY = "block_new_entries"
 _LOCK_FILE = "pending_settings.lock"
@@ -66,26 +66,6 @@ class ChangeResult:
 # ────────────────────────────────────────────────────────────────────
 # clock — weekday-only session days, matching core/loops/desk_steps.is_session_day
 # ────────────────────────────────────────────────────────────────────
-
-def _is_session_day(now: datetime) -> bool:
-    try:
-        return now.weekday() < 5
-    except (AttributeError, TypeError):
-        return False
-
-
-def next_promotion(now: datetime) -> datetime:
-    """Today 09:25 ET if `now` is before that on a session day, else the next
-    session day (weekday-only) at 09:25 ET."""
-    hour, minute = PROMOTE_TIME_ET
-    today_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if _is_session_day(now) and now < today_at:
-        return today_at
-    candidate = today_at + timedelta(days=1)
-    while not _is_session_day(candidate):
-        candidate += timedelta(days=1)
-    return candidate
-
 
 # ────────────────────────────────────────────────────────────────────
 # file plumbing — atomic writes, never-raise reads
@@ -262,12 +242,16 @@ def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: An
 
     if direction == "noop":
         return ChangeResult("noop", key, old, new, "noop", "", "", reason)
+    problem = candidate_error(manager, knob.yaml_path, stored)
+    if problem:
+        return _rejected(desk_dir, now, actor, key, raw_value, problem)
     if direction == "tighten":
         _cancel_pending_for_key(desk_dir, now, actor, key)
         manager.update(knob.yaml_path, stored)
         _audit(desk_dir, now, actor, "applied", key, old, stored, direction, "", reason)
         return ChangeResult("applied", key, old, stored, direction, "", "", reason)
-    return _queue_loosen(desk_dir, now, actor, key, old, stored, direction, reason)
+    return _queue_loosen(desk_dir, now, actor, key, old, stored, direction, reason,
+                         promote_time_of(cfg))
 
 
 def _cancel_pending_for_key(desk_dir: str, now: datetime, actor: str, key: str) -> None:
@@ -285,8 +269,9 @@ def _cancel_pending_for_key(desk_dir: str, now: datetime, actor: str, key: str) 
 
 
 def _queue_loosen(desk_dir: str, now: datetime, actor: str, key: str, old: Any, stored: Any,
-                   direction: str, reason: str) -> ChangeResult:
-    effective_at = next_promotion(now).isoformat()
+                   direction: str, reason: str,
+                   promote_time: tuple[int, int] = PROMOTE_TIME_ET) -> ChangeResult:
+    effective_at = next_promotion(now, promote_time).isoformat()
     pending_id = uuid.uuid4().hex[:12]
     row = {
         "id": pending_id,
@@ -318,22 +303,38 @@ def cancel_pending(desk_dir: str, pending_id: str, *, now: datetime, actor: str)
     return True
 
 
-def _promote_row(manager: Any, desk_dir: str, now: datetime, row: dict) -> bool:
-    """Try to apply one due pending row. Returns True on success. Never raises."""
+def _promote_row(manager: Any, desk_dir: str, now: datetime, row: dict) -> str:
+    """Try to apply one due pending row. Returns "applied", "keep" (transient
+    failure, retry later) or "drop" (the queued value is no longer valid —
+    audited as `promotion_rejected`). Never raises."""
     knob = KNOB_BY_KEY.get(row.get("key"))
     if knob is None:
         logger.error("settings_console_store: promote_pending unknown key %r; keeping row",
                       row.get("key"))
-        return False
+        return "keep"
+    # Re-validate against TODAY's ceiling and config band: the row was checked
+    # when it was queued, and the world may have moved since (I4).
+    ceiling = manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING)
     try:
-        manager.update(knob.yaml_path, row.get("new"))
+        value = coerce(knob, row.get("new"), ceiling=ceiling)
+    except ValueError as exc:
+        problem = str(exc)
+    else:
+        value = list(value) if knob.kind == "csv" else value
+        problem = candidate_error(manager, knob.yaml_path, value)
+    if problem:
+        _audit(desk_dir, now, row.get("actor", ""), "promotion_rejected", row.get("key"),
+               row.get("old"), row.get("new"), "loosen", row.get("effective_at", ""), problem)
+        return "drop"
+    try:
+        manager.update(knob.yaml_path, value)
     except Exception as exc:  # pragma: no cover - defensive, manager is caller-supplied
         logger.error("settings_console_store: failed to apply pending change for %s: %s",
                       row.get("key"), exc)
-        return False
+        return "keep"
     _audit(desk_dir, now, row.get("actor", ""), "promoted", row.get("key"), row.get("old"),
-           row.get("new"), "loosen", row.get("effective_at", ""), row.get("reason", ""))
-    return True
+           value, "loosen", row.get("effective_at", ""), row.get("reason", ""))
+    return "applied"
 
 
 def promote_pending(manager: Any, desk_dir: str, *, now: datetime) -> list[dict]:
@@ -352,10 +353,14 @@ def promote_pending(manager: Any, desk_dir: str, *, now: datetime) -> list[dict]
                                  "pending row %s: %s", row.get("id"), exc)
                     remaining.append(row)
                     continue
-                if effective_dt > now or not _promote_row(manager, desk_dir, now, row):
+                if effective_dt > now:
                     remaining.append(row)
                     continue
-                applied.append(row)
+                outcome = _promote_row(manager, desk_dir, now, row)
+                if outcome == "keep":
+                    remaining.append(row)
+                elif outcome == "applied":
+                    applied.append(row)
             _write_pending(desk_dir, remaining)
         return applied
     except Exception as exc:  # pragma: no cover - last-resort guard

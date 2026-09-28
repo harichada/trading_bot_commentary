@@ -124,13 +124,21 @@ class ConfigManager:
 
     def _validate_config(self):
         """Validate configuration values"""
+        self.validate_candidate(self.config)
+
+    @staticmethod
+    def validate_candidate(config: dict) -> None:
+        """v-risk-console-2026-09-28: the validation `__init__` runs, exposed
+        so a writer (the settings console, the migration script) can check a
+        candidate dict BEFORE persisting it — an unchecked write that fails
+        here would stop the bot from starting next time. Raises ValueError."""
         required_sections = ['schwab', 'trading', 'commentary', 'technical_analysis']
         for section in required_sections:
-            if section not in self.config:
+            if section not in config:
                 raise ValueError(f"Missing required configuration section: {section}")
 
         # Validate trading parameters are within safe ranges
-        trading = self.config.get('trading', {})
+        trading = config.get('trading', {})
         validations = [
             ('max_risk_per_trade', 0.001, 0.10, 'Max risk per trade must be 0.1%-10%'),
             ('min_risk_reward_ratio', 0.5, 10.0, 'Risk/reward ratio must be 0.5-10.0'),
