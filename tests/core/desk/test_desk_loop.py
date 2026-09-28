@@ -82,6 +82,7 @@ def _cfg(tmp_path, **over) -> SimpleNamespace:
         DESK_PLAN_TIME_ET="09:00",
         DESK_REFRESH_TIME_ET="09:35",
         DESK_JOURNAL_TIME_ET="16:05",
+        SETTINGS_PROMOTE_TIME_ET="09:25",
         DESK_IN_PLAY_N=5,
         DESK_SCAN_MAX_SYMBOLS=10,
         ENABLE_DESK_WATCHLIST=False,

@@ -41,7 +41,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from core.config import Config
+from core.config import Config, config_manager
+from core.settings_console_store import promote_pending
 # v-wedge-fix-2026-09-28 fix round 2 (Important 3): the in-play scan's bar fetch
 # is bounded. `to_thread` keeps the loop responsive but its await does not
 # return, so one hung symbol stalled the whole scan. Imported as a module so
@@ -137,6 +138,8 @@ class DeskLoop:
 
     def _schedule(self, cfg: Any) -> List[Tuple[str, Tuple[int, int], Callable]]:
         return [
+            ("settings", steps.parse_et_time(cfg.SETTINGS_PROMOTE_TIME_ET, "09:25"),
+             self._step_settings),
             ("plan", steps.parse_et_time(cfg.DESK_PLAN_TIME_ET, "09:00"), self._step_plan),
             ("refresh", steps.parse_et_time(cfg.DESK_REFRESH_TIME_ET, "09:35"),
              self._step_refresh),
@@ -151,6 +154,18 @@ class DeskLoop:
             self.engine._audit(component, None, action, reason, **fields)
         except Exception as exc:
             logger.debug("desk_loop audit failed component=%s err=%s", component, exc)
+
+    # ── 09:25 — promote pending settings-console changes ────────────
+
+    async def _step_settings(self, cfg: Any, now: datetime, date: str) -> None:
+        """v-risk-console-2026-09-28: apply any pending settings-console rows
+        whose `effective_at` has arrived, then audit each one applied."""
+        applied = await asyncio.to_thread(promote_pending, config_manager,
+                                           cfg.DESK_DATA_DIR, now=now)
+        for row in applied:
+            self._audit("settings_console", "promoted", str(row.get("key", "")),
+                        old=row.get("old"), new=row.get("new"),
+                        effective_at=row.get("effective_at"))
 
     # ── 09:00 — the plan ────────────────────────────────────────────
 

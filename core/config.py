@@ -4401,6 +4401,29 @@ class Config:
         return bool(self.manager.get('trading.enable_playbook_gate', False))
 
     @property
+    def BLOCK_NEW_ENTRIES(self) -> bool:
+        """v-risk-console-2026-09-28: operator kill switch for NEW entries only.
+        Exits and position management never pass through this router.
+
+        yaml-only: trading.block_new_entries, default False. No env override
+        — the settings console owns this value, so a stray env var can't
+        silently mask or override an operator's console change.
+        """
+        return bool(self.manager.get('trading.block_new_entries', False))
+
+    @property
+    def SETTINGS_PROMOTE_TIME_ET(self) -> str:
+        """v-risk-console-2026-09-28: ET wall-clock time at which the desk loop
+        promotes pending settings-console changes. Set via env
+        SETTINGS_PROMOTE_TIME_ET or yaml trading.settings_promote_time_et,
+        default "09:25".
+        """
+        env_val = os.getenv("SETTINGS_PROMOTE_TIME_ET")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.settings_promote_time_et', "09:25"))
+
+    @property
     def DESK_IN_PLAY_N(self) -> int:
         """v-playbook-desk-b2-2026-09-25: how many ranked stocks the desk keeps
         on its in-play list at the 09:35 refresh.

@@ -6427,6 +6427,12 @@ class TradingEngineWithCommentary:
                     strength=round(float(getattr(signal, "strength", 0)), 3),
                     ml_signal=ml_signal)
 
+        # v-risk-console-2026-09-28: operator kill switch for NEW entries only.
+        # Exits and position management never pass through this router.
+        if bool(getattr(Config(), "BLOCK_NEW_ENTRIES", False)):
+            self._audit("signal_router", signal.symbol, "skip", "entries_blocked_by_console")
+            return
+
         # Shadow meta-model evaluation — logs only, no decision impact.
         # Dispatched via asyncio.to_thread so the sync sklearn/xgb call
         # does not block the event loop.

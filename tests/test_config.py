@@ -283,3 +283,32 @@ class TestEnableBotOnlyPnlCircuitEnvOverride:
             assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is False, (
                 f"env={falsy!r} must resolve to False"
             )
+
+
+def test_block_new_entries_yaml_only(tmp_path, monkeypatch):
+    from core.config import Config, ConfigManager
+    import yaml
+    p = tmp_path / "c.yaml"
+    # ConfigManager._validate_config requires these top-level sections to be
+    # present (not necessarily populated) — see tests/test_config.py's other
+    # temp-yaml fixtures for the same minimal shape.
+    p.write_text(yaml.safe_dump({
+        "schwab": {},
+        "trading": {"block_new_entries": True},
+        "commentary": {},
+        "technical_analysis": {},
+    }))
+    cfg = Config()
+    monkeypatch.setattr(cfg, "manager", ConfigManager(config_path=str(p)))
+    monkeypatch.setenv("BLOCK_NEW_ENTRIES", "0")   # env must NOT override
+    assert cfg.BLOCK_NEW_ENTRIES is True
+    cfg.manager.update("trading.block_new_entries", False)
+    assert cfg.BLOCK_NEW_ENTRIES is False
+
+
+def test_settings_promote_time_default_and_env(monkeypatch):
+    from core.config import Config
+    monkeypatch.delenv("SETTINGS_PROMOTE_TIME_ET", raising=False)
+    assert Config().SETTINGS_PROMOTE_TIME_ET == "09:25"
+    monkeypatch.setenv("SETTINGS_PROMOTE_TIME_ET", "09:31")
+    assert Config().SETTINGS_PROMOTE_TIME_ET == "09:31"
