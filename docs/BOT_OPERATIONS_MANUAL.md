@@ -1564,11 +1564,35 @@ would add — never any other `.env` line, so a secret such as
 files (`<file>.bak_console_<YYYYmmdd_HHMMSS>`), writes the yaml keys via
 `ConfigManager.update(...)`, and comments out each migrated `.env` line in
 place as `# migrated-to-yaml <date>: NAME=<original value>` — every other
-`.env` line, migrated or not, is preserved byte-for-byte. **The bot must be
-restarted afterward**: `.env` is only read at process start, so a migrated
-value keeps reading from the (now-stale, but still present until the next
-restart) in-process environment until the restart picks up the yaml value
-and the console line stops reporting `env_shadowed`.
+`.env` line, migrated or not, is preserved byte-for-byte (every duplicate
+declaration of a migrated name is commented out, not just the last one).
+
+**Stop the bot first, then migrate, then restart — as one sequence.** A
+running process holds its own in-memory copy of the yaml and rewrites the
+whole file on its next `ConfigManager.update()` (a hands-off save, a block
+click), which would silently erase the migrated keys while the `.env` lines
+are already commented out. `--apply` therefore refuses (exit 4) while
+anything answers on the bot port (`--port`, default 9000); `--force`
+overrides that and is not recommended. Before writing, the script also runs
+`ConfigManager.validate_candidate` on the planned yaml and aborts with exit 3
+(no writes, no backups left behind) if the loader would refuse it. The
+backups and temp files (`.env.bak_console_*`, `.env.tmp`,
+`Config().yaml.*`) hold secrets and are git-ignored.
+
+**Validation band.** Every console write — a tighten applied now or a
+loosen promoted later — is checked against the same validation the config
+loader runs at start-up (`ConfigManager.validate_candidate`: daily loss
+1%–20%, positions 1–50, …) on a copy *before* it is persisted, and the
+registry bounds mirror that band (per-trade risk is capped at 5% in the
+console; anything larger is file-only). A queued loosen is re-validated
+against that day's allocation ceiling and band when it is promoted; if it no
+longer passes it is dropped with a `promotion_rejected` audit row rather
+than applied or retried forever.
+
+**Promotion needs the desk loop.** Pending loosens are promoted by the desk
+loop's 09:25 step, so with `ENABLE_DESK` off they would sit "pending"
+forever. `GET /api/console` reports `promotion_enabled` and the card shows a
+red banner when it is false.
 
 **The block switch.** `POST /api/console/block-entries` sets yaml-only
 `trading.block_new_entries` (`Config().BLOCK_NEW_ENTRIES`, no env override),

@@ -111,6 +111,9 @@ def get_console() -> Any:
             "ok": True, "block_new_entries": bool(cfg.BLOCK_NEW_ENTRIES),
             "allocation_ceiling": float(ceiling),
             "promote_time_et": cfg.SETTINGS_PROMOTE_TIME_ET,
+            # Pending loosens are promoted by the desk loop; without it they
+            # would sit "pending" forever (final review I1).
+            "promotion_enabled": bool(getattr(cfg, "ENABLE_DESK", False)),
             "knobs": knobs, "pending": pending_rows,
             "audit": read_audit(desk_dir, limit=20),
         }

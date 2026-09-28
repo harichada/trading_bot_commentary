@@ -3721,6 +3721,10 @@
                         Loading…
                     </button>
 
+                    <div id="rc-banner" hidden style="margin-bottom: 0.75rem; padding: 0.6rem 0.9rem; border-radius: var(--radius);
+                        background: oklch(0.55 0.22 25 / 0.15); border: 1px solid oklch(0.55 0.22 25 / 0.5); color: var(--fg); font-size: 0.85rem;">
+                        Desk loop is off (ENABLE_DESK): queued increases will never be promoted. Enable the desk or edit the file.
+                    </div>
                     <div id="rc-groups">
                         <span style="color: var(--muted-fg); font-style: italic;">Loading risk console…</span>
                     </div>
@@ -4015,6 +4019,7 @@
         }
 
         function rcDisplayValue(v) {
+            if (v === null || v === undefined || v === '') return '—';
             return Array.isArray(v) ? v.join(', ') : String(v);
         }
 
@@ -4099,6 +4104,8 @@
 
         function renderRiskConsole(data) {
             const blockBtn = document.getElementById('rc-block-btn');
+            const banner = document.getElementById('rc-banner');
+            if (banner) banner.hidden = data.promotion_enabled !== false;
             const blocked = !!data.block_new_entries;
             blockBtn.textContent = blocked ? 'ENTRIES BLOCKED — click to resume' : 'BLOCK NEW ENTRIES';
             blockBtn.style.background = blocked ? 'oklch(0.35 0.01 270)' : 'oklch(0.55 0.22 25)';
@@ -4211,8 +4218,15 @@
         }
 
         async function toggleBlockEntries() {
-            const blocked = !!(rcSnapshot && rcSnapshot.block_new_entries);
             const status = document.getElementById('rc-status');
+            if (!rcSnapshot) {
+                // Never act on an unknown state: the last snapshot fetch failed.
+                status.textContent = 'Console state unknown — reload the tab before blocking or resuming.';
+                status.style.color = 'oklch(0.7 0.2 25)';
+                await loadRiskConsole();
+                return;
+            }
+            const blocked = !!rcSnapshot.block_new_entries;
             let reason, confirmValue;
             if (blocked) {
                 const typed = window.prompt('Type YES to resume new entries');

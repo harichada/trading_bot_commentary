@@ -29,3 +29,10 @@ def test_risk_console_apply_and_cancel_use_data_attributes_not_inline_handlers()
     assert 'data-pending-id=' in html
     assert 'onclick="applyRiskKnob(' not in html
     assert 'onclick="cancelRiskPending(' not in html
+
+
+def test_settings_tab_has_promotion_banner_and_null_display():
+    html = Path("templates/dashboard.html").read_text()
+    assert 'id="rc-banner"' in html
+    assert "promotion_enabled" in html
+    assert "return '—'" in html

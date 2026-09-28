@@ -157,3 +157,13 @@ def test_reason_is_bounded(client):
     assert r.status_code == 200
     rows = client.get("/api/console/audit?limit=1").json()["rows"]
     assert len(rows[-1]["reason"]) == 500
+
+
+def test_snapshot_reports_promotion_enabled(client, monkeypatch):
+    import api.console as console
+    cfg = console._cfg()
+    body = client.get("/api/console").json()
+    assert "promotion_enabled" in body
+    cfg.ENABLE_DESK = True
+    monkeypatch.setattr(console, "_cfg", lambda: cfg)
+    assert client.get("/api/console").json()["promotion_enabled"] is True
