@@ -3706,6 +3706,36 @@
                 </div>
             </div>
 
+            <!-- Risk Console Card (v-risk-console-2026-09-28) -->
+            <div class="card" id="risk-console-card" style="margin-top: 1.5rem;">
+                <h3>Risk Console
+                    <span style="font-size: 0.7em; color: #888; font-weight: normal; margin-left: 0.5rem;">
+                        — live risk knobs, entry block switch, and change audit
+                    </span>
+                </h3>
+                <div style="padding: 1.25rem;">
+                    <button id="rc-block-btn" onclick="toggleBlockEntries()"
+                        style="width: 100%; padding: 0.9rem; margin-bottom: 1.25rem; border: none;
+                               border-radius: var(--radius); font: 700 0.95rem var(--font-mono);
+                               letter-spacing: 0.04em; cursor: pointer;">
+                        Loading…
+                    </button>
+
+                    <div id="rc-groups">
+                        <span style="color: var(--muted-fg); font-style: italic;">Loading risk console…</span>
+                    </div>
+
+                    <div id="rc-status" style="margin-top: 0.75rem; font-size: 0.85rem; min-height: 1.2em;"></div>
+
+                    <h4 style="margin: 1.5rem 0 0.5rem 0; color: var(--muted-fg); font-size: 0.85rem;
+                        text-transform: uppercase; letter-spacing: 0.04em;">Recent changes</h4>
+                    <div id="rc-audit" style="font: 400 0.8rem var(--font-mono); color: var(--muted-fg);
+                        max-height: 220px; overflow-y: auto; padding: 0.75rem;
+                        background: oklch(0.12 0.01 270); border-radius: var(--radius);">
+                    </div>
+                </div>
+            </div>
+
             <!-- Info note -->
             <div style="margin-top: 1rem; padding: 1rem; background: oklch(0.65 0.2 200 / 0.08);
                 border: 1px solid oklch(0.65 0.2 200 / 0.2); border-radius: var(--radius);
@@ -3785,6 +3815,7 @@
                 loadBacktestLatest();
             } else if (tabName === 'settings') {
                 loadHandsOffDenylist();
+                loadRiskConsole();
             }
         }
 
@@ -3970,6 +4001,247 @@
                 btn.disabled = false;
             }
         }
+
+        // ============== RISK CONSOLE ==============
+        // v-risk-console-2026-09-28: Settings panel — GET/PUT /api/console
+        // knobs, block-new-entries switch, pending ratchet badges, audit.
+        let rcSnapshot = null;
+
+        function rcFormatLocal(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return escapeHtml(iso);
+            return d.toLocaleString();
+        }
+
+        async function loadRiskConsole() {
+            const groups = document.getElementById('rc-groups');
+            try {
+                const resp = await authFetch('/api/console');
+                const data = await resp.json();
+                if (!data.ok) {
+                    groups.innerHTML = `<span style="color:#ef5350;">Failed to load risk console: ${escapeHtml(data.error || 'unknown error')}</span>`;
+                    return;
+                }
+                rcSnapshot = data;
+                renderRiskConsole(data);
+                renderRiskAudit(data.audit || []);
+            } catch (e) {
+                console.error('Failed to load risk console:', e);
+                groups.innerHTML = '<span style="color:#ef5350;">Failed to load risk console — network error</span>';
+            }
+        }
+
+        function rcKnobRow(k) {
+            const disabled = k.env_shadowed || k.restart_required;
+            const disabledAttr = disabled ? 'disabled' : '';
+            const valueAttr = Array.isArray(k.value) ? k.value.join(',') : (k.value ?? '');
+            let inputHtml;
+            if (k.kind === 'bool') {
+                inputHtml = `<input type="checkbox" id="rc-input-${escapeHtml(k.key)}" ${k.value ? 'checked' : ''} ${disabledAttr}>`;
+            } else if (k.kind === 'csv') {
+                inputHtml = `<input type="text" id="rc-input-${escapeHtml(k.key)}" value="${escapeHtml(valueAttr)}"
+                    style="width:13rem; padding:0.35rem 0.5rem; background:oklch(0.18 0.01 270);
+                           border:1px solid var(--border); border-radius:var(--radius); color:var(--fg);
+                           font:400 0.8rem var(--font-mono);" ${disabledAttr}>`;
+            } else {
+                const step = k.kind === 'fraction' ? '0.001' : (k.kind === 'money' ? '50' : '1');
+                const minAttr = (k.minimum !== null && k.minimum !== undefined) ? `min="${k.minimum}"` : '';
+                const maxAttr = (k.maximum !== null && k.maximum !== undefined) ? `max="${k.maximum}"` : '';
+                inputHtml = `<input type="number" id="rc-input-${escapeHtml(k.key)}" value="${escapeHtml(valueAttr)}"
+                    step="${step}" ${minAttr} ${maxAttr}
+                    style="width:7rem; padding:0.35rem 0.5rem; background:oklch(0.18 0.01 270);
+                           border:1px solid var(--border); border-radius:var(--radius); color:var(--fg);
+                           font:400 0.8rem var(--font-mono);" ${disabledAttr}>`;
+            }
+
+            let badges = '';
+            if (k.env_shadowed) {
+                badges += `<span style="margin-left:0.4rem; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.7rem;
+                    background:oklch(0.5 0.15 50 / 0.2); color:oklch(0.75 0.15 50);">env override — file only</span>`;
+            }
+            if (k.restart_required) {
+                badges += `<span style="margin-left:0.4rem; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.7rem;
+                    background:oklch(0.5 0.15 260 / 0.2); color:oklch(0.75 0.1 260);">restart required</span>`;
+            }
+            if (k.pending) {
+                const effLocal = rcFormatLocal(k.pending.effective_at);
+                badges += `<span style="margin-left:0.4rem; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.7rem;
+                    background:oklch(0.78 0.16 80 / 0.15); color:oklch(0.85 0.12 80);">
+                    pending until ${escapeHtml(effLocal)}
+                    <a href="#" onclick="cancelRiskPending('${escapeHtml(k.pending.id)}'); return false;"
+                       style="color:oklch(0.85 0.12 80); text-decoration:underline; margin-left:0.3rem;">cancel</a>
+                </span>`;
+            }
+
+            const displayValue = Array.isArray(k.value) ? k.value.join(', ') : String(k.value);
+
+            return `<tr style="border-top:1px solid var(--border);">
+                <td style="padding:0.5rem 0.4rem; color:var(--fg); font-size:0.85rem;">${escapeHtml(k.label)}${badges}</td>
+                <td style="padding:0.5rem 0.4rem; color:var(--muted-fg); font-size:0.8rem; font-family:var(--font-mono);">${escapeHtml(displayValue)}</td>
+                <td style="padding:0.5rem 0.4rem;">${inputHtml}</td>
+                <td style="padding:0.5rem 0.4rem;">
+                    <input type="text" id="rc-reason-${escapeHtml(k.key)}" placeholder="why"
+                        style="width:8rem; padding:0.35rem 0.5rem; background:oklch(0.18 0.01 270);
+                               border:1px solid var(--border); border-radius:var(--radius); color:var(--fg);
+                               font:400 0.8rem var(--font-mono);" ${disabledAttr}>
+                </td>
+                <td style="padding:0.5rem 0.4rem;">
+                    <button onclick="applyRiskKnob('${escapeHtml(k.key)}')" class="button button-primary"
+                        style="padding:0.35rem 0.8rem; font-size:0.8rem;" ${disabledAttr}>Apply</button>
+                </td>
+            </tr>`;
+        }
+
+        function renderRiskConsole(data) {
+            const blockBtn = document.getElementById('rc-block-btn');
+            const blocked = !!data.block_new_entries;
+            blockBtn.textContent = blocked ? 'ENTRIES BLOCKED — click to resume' : 'BLOCK NEW ENTRIES';
+            blockBtn.style.background = blocked ? 'oklch(0.35 0.01 270)' : 'oklch(0.55 0.22 25)';
+            blockBtn.style.color = '#fff';
+
+            const groupOrder = [['risk', 'Risk'], ['lanes', 'Lanes'], ['gates', 'Gates']];
+            const knobs = data.knobs || [];
+            let html = '';
+            groupOrder.forEach(([groupKey, groupLabel]) => {
+                const rows = knobs.filter(k => k.group === groupKey);
+                if (rows.length === 0) return;
+                html += `<table style="width:100%; border-collapse:collapse; margin-bottom:1rem;">
+                    <thead><tr>
+                        <th style="text-align:left; padding:0.4rem; color:var(--muted-fg); font-size:0.75rem; text-transform:uppercase;">${escapeHtml(groupLabel)}</th>
+                        <th style="text-align:left; padding:0.4rem; color:var(--muted-fg); font-size:0.75rem;">Value</th>
+                        <th style="text-align:left; padding:0.4rem; color:var(--muted-fg); font-size:0.75rem;">New value</th>
+                        <th style="text-align:left; padding:0.4rem; color:var(--muted-fg); font-size:0.75rem;">Reason</th>
+                        <th></th>
+                    </tr></thead><tbody>`;
+                rows.forEach(k => { html += rcKnobRow(k); });
+                html += '</tbody></table>';
+            });
+            document.getElementById('rc-groups').innerHTML = html || '<span style="color: var(--muted-fg);">No knobs available.</span>';
+        }
+
+        function rcKnobInputValue(key, kind) {
+            const el = document.getElementById('rc-input-' + key);
+            if (!el) return null;
+            if (kind === 'bool') return el.checked;
+            return el.value;
+        }
+
+        async function applyRiskKnob(key) {
+            const knob = (rcSnapshot?.knobs || []).find(k => k.key === key);
+            if (!knob) return;
+            const status = document.getElementById('rc-status');
+            const value = rcKnobInputValue(key, knob.kind);
+            const reasonEl = document.getElementById('rc-reason-' + key);
+            const reason = reasonEl ? reasonEl.value : '';
+
+            status.textContent = 'Applying…';
+            status.style.color = 'var(--muted-fg)';
+
+            try {
+                const resp = await authFetch('/api/console/' + encodeURIComponent(key), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: value, reason: reason })
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    const result = data.result || {};
+                    if (result.status === 'applied') {
+                        status.textContent = `Applied: ${escapeHtml(key)} → ${escapeHtml(String(result.new))}`;
+                        status.style.color = '#26a69a';
+                    } else if (result.status === 'pending') {
+                        status.textContent = `Pending until ${escapeHtml(rcFormatLocal(result.effective_at))}: ${escapeHtml(key)} → ${escapeHtml(String(result.new))}`;
+                        status.style.color = 'oklch(0.78 0.16 80)';
+                    } else {
+                        status.textContent = `No change: ${escapeHtml(key)} already ${escapeHtml(String(result.new))}`;
+                        status.style.color = 'var(--muted-fg)';
+                    }
+                } else {
+                    status.textContent = `Rejected: ${escapeHtml(data.error || 'unknown error')}`;
+                    status.style.color = '#ef5350';
+                }
+            } catch (e) {
+                console.error('Failed to apply risk knob:', e);
+                status.textContent = 'Apply failed — network error';
+                status.style.color = '#ef5350';
+            } finally {
+                loadRiskConsole();
+            }
+        }
+
+        async function cancelRiskPending(id) {
+            const status = document.getElementById('rc-status');
+            try {
+                const resp = await authFetch('/api/console/pending/' + encodeURIComponent(id), { method: 'DELETE' });
+                const data = await resp.json();
+                if (data.ok) {
+                    status.textContent = 'Pending change cancelled.';
+                    status.style.color = 'var(--muted-fg)';
+                } else {
+                    status.textContent = `Cancel failed: ${escapeHtml(data.error || 'unknown error')}`;
+                    status.style.color = '#ef5350';
+                }
+            } catch (e) {
+                console.error('Failed to cancel pending change:', e);
+                status.textContent = 'Cancel failed — network error';
+                status.style.color = '#ef5350';
+            } finally {
+                loadRiskConsole();
+            }
+        }
+
+        async function toggleBlockEntries() {
+            const blocked = !!(rcSnapshot && rcSnapshot.block_new_entries);
+            const status = document.getElementById('rc-status');
+            let reason, confirmValue;
+            if (blocked) {
+                const typed = window.prompt('Type YES to resume new entries');
+                if (typed !== 'YES') return;
+                reason = 'resume via dashboard';
+                confirmValue = typed;
+            } else {
+                if (!confirm('Block all NEW entries now? Exits keep running.')) return;
+                reason = 'block via dashboard';
+                confirmValue = '';
+            }
+
+            try {
+                const resp = await authFetch('/api/console/block-entries', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ block: !blocked, reason: reason, confirm: confirmValue })
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    status.textContent = blocked ? 'New entries resumed.' : 'New entries blocked. Exits keep running.';
+                    status.style.color = blocked ? '#26a69a' : '#ef5350';
+                } else {
+                    status.textContent = `Failed: ${escapeHtml(data.error || 'unknown error')}`;
+                    status.style.color = '#ef5350';
+                }
+            } catch (e) {
+                console.error('Failed to toggle block-entries:', e);
+                status.textContent = 'Failed — network error';
+                status.style.color = '#ef5350';
+            } finally {
+                loadRiskConsole();
+            }
+        }
+
+        function renderRiskAudit(rows) {
+            const el = document.getElementById('rc-audit');
+            const recent = (rows || []).slice(-20).reverse();
+            if (recent.length === 0) {
+                el.innerHTML = '<span style="font-style:italic;">No changes yet.</span>';
+                return;
+            }
+            el.innerHTML = recent.map(row => {
+                const line = `${rcFormatLocal(row.ts)} · ${row.event} · ${row.key} · ${row.old} → ${row.new} · ${row.reason || ''}`;
+                return `<div style="padding:0.2rem 0;">${escapeHtml(line)}</div>`;
+            }).join('');
+        }
+
 
         // ============== SENTIMENT TAB FUNCTIONS ==============
         function loadSentimentTab() {
