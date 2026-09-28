@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pytest
@@ -119,3 +120,57 @@ def test_block_and_unblock(tmp_path):
 def test_pending_file_corruption_degrades_to_empty(tmp_path):
     (tmp_path / store.PENDING_FILE).write_text("{not json")
     assert store.list_pending(str(tmp_path)) == []
+
+
+# ── Fix round 1 regression tests ─────────────────────────────────────
+
+def test_tighten_cancels_stale_pending_loosen_for_same_key(tmp_path):
+    m = FakeManager()
+    pending = store.submit_change(m, FakeCfg(), str(tmp_path), "risk_per_trade_pct", 0.02,
+                                   now=_mon(), actor="t", reason="more risk")
+    assert pending.status == "pending"
+    tightened = store.submit_change(m, FakeCfg(), str(tmp_path), "risk_per_trade_pct", 0.005,
+                                     now=_mon(), actor="t", reason="cut risk")
+    assert tightened.status == "applied" and tightened.direction == "tighten"
+    assert store.list_pending(str(tmp_path)) == []
+    events = [row["event"] for row in store.read_audit(str(tmp_path))]
+    assert events[-2:] == ["cancelled", "applied"]
+    cancelled_row = [r for r in store.read_audit(str(tmp_path)) if r["event"] == "cancelled"][-1]
+    assert cancelled_row["reason"] == "superseded_by_tighten"
+    assert cancelled_row["key"] == "risk_per_trade_pct"
+
+
+def test_concurrent_loosen_submissions_do_not_clobber_each_other(tmp_path):
+    m = FakeManager()
+    desk_dir = str(tmp_path)
+    errors: list[Exception] = []
+
+    def worker(key, raw):
+        try:
+            for _ in range(50):
+                store.submit_change(m, FakeCfg(), desk_dir, key, raw, now=_mon(), actor="t", reason="")
+        except Exception as exc:  # pragma: no cover - surfaced via assertion below
+            errors.append(exc)
+
+    t1 = threading.Thread(target=worker, args=("risk_per_trade_pct", 0.02))
+    t2 = threading.Thread(target=worker, args=("max_positions", 8))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert not errors
+    keys = {row["key"] for row in store.list_pending(desk_dir)}
+    assert keys == {"risk_per_trade_pct", "max_positions"}
+
+
+def test_read_audit_survives_invalid_byte_sequence(tmp_path):
+    (tmp_path / store.AUDIT_FILE).write_bytes(b'{"ts": "ok"}\n\xff\xfe not valid utf-8\n')
+    assert store.read_audit(str(tmp_path)) == []
+
+
+def test_read_audit_limit_zero_returns_empty(tmp_path):
+    m = FakeManager()
+    store.submit_change(m, FakeCfg(), str(tmp_path), "risk_per_trade_pct", "0.005",
+                        now=_mon(), actor="t", reason="cut risk")
+    assert store.read_audit(str(tmp_path), limit=0) == []

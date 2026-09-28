@@ -18,13 +18,16 @@ any I/O or parse failure is logged and degrades to an empty/kept result.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Iterator
 
 from core.settings_console import (ALLOCATION_CEILING_PATH,
                                     DEFAULT_ALLOCATION_CEILING, KNOB_BY_KEY,
@@ -39,6 +42,13 @@ PROMOTE_TIME_ET = (9, 25)
 
 BLOCK_NEW_ENTRIES_PATH = "trading.block_new_entries"
 _BLOCK_KEY = "block_new_entries"
+_LOCK_FILE = "pending_settings.lock"
+
+# One threading.Lock per desk_dir, shared by every in-process caller (the
+# FastAPI worker and the desk loop thread both live in one process). Guarded
+# by its own lock since the dict itself is mutated lazily on first use.
+_process_locks: dict[str, threading.Lock] = {}
+_process_locks_guard = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -94,6 +104,39 @@ def _pending_path(desk_dir: str) -> str:
 
 def _audit_path(desk_dir: str) -> str:
     return os.path.join(desk_dir, AUDIT_FILE)
+
+
+def _lock_path(desk_dir: str) -> str:
+    return os.path.join(desk_dir, _LOCK_FILE)
+
+
+def _get_process_lock(desk_dir: str) -> threading.Lock:
+    abs_dir = os.path.abspath(desk_dir)
+    with _process_locks_guard:
+        lock = _process_locks.get(abs_dir)
+        if lock is None:
+            lock = threading.Lock()
+            _process_locks[abs_dir] = lock
+        return lock
+
+
+@contextlib.contextmanager
+def _locked(desk_dir: str) -> Iterator[None]:
+    """Serialise a pending-file read → mutate → write cycle: a threading.Lock
+    per desk_dir for in-process callers (desk loop thread + API worker),
+    plus an flock on `<desk_dir>/pending_settings.lock` as cheap
+    belt-and-braces against a second process. Always releases both."""
+    _ensure_dir(desk_dir)
+    with _get_process_lock(desk_dir):
+        fh = open(_lock_path(desk_dir), "a+")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 def _atomic_write_json(path: str, data: Any) -> None:
@@ -161,7 +204,8 @@ def read_audit(desk_dir: str, limit: int = 50) -> list[dict]:
             lines = fh.readlines()
     except FileNotFoundError:
         return []
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError also catches UnicodeDecodeError from a corrupted file.
         logger.error("settings_console_store: failed to read audit file %s: %s", path, exc)
         return []
     rows: list[dict] = []
@@ -173,7 +217,11 @@ def read_audit(desk_dir: str, limit: int = 50) -> list[dict]:
             rows.append(json.loads(stripped))
         except json.JSONDecodeError as exc:
             logger.error("settings_console_store: skipping malformed audit row: %s", exc)
-    return rows[-limit:] if limit is not None and limit >= 0 else rows
+    if limit is None or limit < 0:
+        return rows
+    if limit == 0:
+        return []
+    return rows[-limit:]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -215,10 +263,25 @@ def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: An
     if direction == "noop":
         return ChangeResult("noop", key, old, new, "noop", "", "", reason)
     if direction == "tighten":
+        _cancel_pending_for_key(desk_dir, now, actor, key)
         manager.update(knob.yaml_path, stored)
         _audit(desk_dir, now, actor, "applied", key, old, stored, direction, "", reason)
         return ChangeResult("applied", key, old, stored, direction, "", "", reason)
     return _queue_loosen(desk_dir, now, actor, key, old, stored, direction, reason)
+
+
+def _cancel_pending_for_key(desk_dir: str, now: datetime, actor: str, key: str) -> None:
+    """A tighten on `key` makes any queued loosen for the same key stale —
+    drop it before applying, so a cancelled/replaced request never lands
+    later and undoes the tighten."""
+    with _locked(desk_dir):
+        rows = list_pending(desk_dir)
+        match = next((r for r in rows if r.get("key") == key), None)
+        if match is None:
+            return
+        _write_pending(desk_dir, [r for r in rows if r.get("key") != key])
+    _audit(desk_dir, now, actor, "cancelled", key, match.get("old"), match.get("new"),
+           "loosen", match.get("effective_at", ""), "superseded_by_tighten")
 
 
 def _queue_loosen(desk_dir: str, now: datetime, actor: str, key: str, old: Any, stored: Any,
@@ -235,20 +298,21 @@ def _queue_loosen(desk_dir: str, now: datetime, actor: str, key: str, old: Any, 
         "actor": actor,
         "reason": reason,
     }
-    rows = [r for r in list_pending(desk_dir) if r.get("key") != key]
-    rows.append(row)
-    _write_pending(desk_dir, rows)
+    with _locked(desk_dir):
+        rows = [r for r in list_pending(desk_dir) if r.get("key") != key]
+        rows.append(row)
+        _write_pending(desk_dir, rows)
     _audit(desk_dir, now, actor, "pending", key, old, stored, direction, effective_at, reason)
     return ChangeResult("pending", key, old, stored, direction, effective_at, pending_id, reason)
 
 
 def cancel_pending(desk_dir: str, pending_id: str, *, now: datetime, actor: str) -> bool:
-    rows = list_pending(desk_dir)
-    match = next((r for r in rows if r.get("id") == pending_id), None)
-    if match is None:
-        return False
-    remaining = [r for r in rows if r.get("id") != pending_id]
-    _write_pending(desk_dir, remaining)
+    with _locked(desk_dir):
+        rows = list_pending(desk_dir)
+        match = next((r for r in rows if r.get("id") == pending_id), None)
+        if match is None:
+            return False
+        _write_pending(desk_dir, [r for r in rows if r.get("id") != pending_id])
     _audit(desk_dir, now, actor, "cancelled", match.get("key"), match.get("old"),
            match.get("new"), "loosen", match.get("effective_at", ""), match.get("reason", ""))
     return True
@@ -276,22 +340,23 @@ def promote_pending(manager: Any, desk_dir: str, *, now: datetime) -> list[dict]
     """Apply every pending row with `effective_at <= now`. Never raises: a row
     that fails to parse or apply is kept and logged, not dropped."""
     try:
-        rows = list_pending(desk_dir)
-        applied: list[dict] = []
-        remaining: list[dict] = []
-        for row in rows:
-            try:
-                effective_dt = datetime.fromisoformat(row.get("effective_at", ""))
-            except (TypeError, ValueError) as exc:
-                logger.error("settings_console_store: unparsable effective_at for pending "
-                             "row %s: %s", row.get("id"), exc)
-                remaining.append(row)
-                continue
-            if effective_dt > now or not _promote_row(manager, desk_dir, now, row):
-                remaining.append(row)
-                continue
-            applied.append(row)
-        _write_pending(desk_dir, remaining)
+        with _locked(desk_dir):
+            rows = list_pending(desk_dir)
+            applied: list[dict] = []
+            remaining: list[dict] = []
+            for row in rows:
+                try:
+                    effective_dt = datetime.fromisoformat(row.get("effective_at", ""))
+                except (TypeError, ValueError) as exc:
+                    logger.error("settings_console_store: unparsable effective_at for "
+                                 "pending row %s: %s", row.get("id"), exc)
+                    remaining.append(row)
+                    continue
+                if effective_dt > now or not _promote_row(manager, desk_dir, now, row):
+                    remaining.append(row)
+                    continue
+                applied.append(row)
+            _write_pending(desk_dir, remaining)
         return applied
     except Exception as exc:  # pragma: no cover - last-resort guard
         logger.error("settings_console_store: promote_pending failed: %s", exc)
