@@ -37,8 +37,14 @@ from typing import Any
 
 import yaml
 
-from core.config import ConfigManager
-from core.settings_console import (ALLOCATION_CEILING_PATH,
+# Runnable as `python scripts/migrate_console_settings.py` from the repo root:
+# put the repo root on sys.path before importing the bot's modules.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from core.config import ConfigManager  # noqa: E402
+from core.settings_console import (ALLOCATION_CEILING_PATH,  # noqa: E402
                                     DEFAULT_ALLOCATION_CEILING, KNOBS, coerce)
 from scripts.migrate_console_env import (clean_value, line_ending,
                                           parse_env_lines, write_env_atomic)
