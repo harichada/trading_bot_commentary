@@ -312,3 +312,28 @@ def test_settings_promote_time_default_and_env(monkeypatch):
     assert Config().SETTINGS_PROMOTE_TIME_ET == "09:25"
     monkeypatch.setenv("SETTINGS_PROMOTE_TIME_ET", "09:31")
     assert Config().SETTINGS_PROMOTE_TIME_ET == "09:31"
+
+
+def test_config_manager_update_is_thread_safe_and_atomic(tmp_path):
+    """v-risk-console-2026-09-28: concurrent updates from the API thread and
+    the desk loop must not lose keys or leave a torn yaml behind."""
+    import threading
+    import yaml
+    from core.config import ConfigManager
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump({"schwab": {}, "trading": {}, "commentary": {},
+                                 "technical_analysis": {}}))
+    mgr = ConfigManager(config_path=str(p))
+
+    def writer(prefix):
+        for i in range(25):
+            mgr.update(f"trading.{prefix}_{i}", i)
+
+    threads = [threading.Thread(target=writer, args=(f"k{t}",)) for t in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    on_disk = yaml.safe_load(p.read_text())["trading"]
+    assert len(on_disk) == 100
+    assert not (tmp_path / "c.yaml.tmp").exists()

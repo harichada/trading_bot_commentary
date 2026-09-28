@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 import yaml
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -106,10 +107,20 @@ class ConfigManager:
             }
         }
 
+    # v-risk-console-2026-09-28: the settings console writes from the API
+    # thread while the desk loop promotes pending rows from a worker thread.
+    # One re-entrant lock serialises the read-modify-write, and the file is
+    # written to a temp path then renamed so a crash mid-write never leaves
+    # a truncated Config().yaml behind.
+    _write_lock = threading.RLock()
+
     def _save_config(self, config: dict):
-        """Save configuration to file"""
-        with open(self.config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
+        """Save configuration to file (atomic: temp file + rename)."""
+        with self._write_lock:
+            tmp_path = self.config_path.with_name(self.config_path.name + ".tmp")
+            with open(tmp_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+            os.replace(tmp_path, self.config_path)
 
     def _validate_config(self):
         """Validate configuration values"""
@@ -144,15 +155,16 @@ class ConfigManager:
         return value
 
     def update(self, key: str, value):
-        """Update configuration value using dot notation"""
-        keys = key.split('.')
-        config = self.config
-        for k in keys[:-1]:
-            if k not in config:
-                config[k] = {}
-            config = config[k]
-        config[keys[-1]] = value
-        self._save_config(self.config)
+        """Update configuration value using dot notation (thread-safe)."""
+        with self._write_lock:
+            keys = key.split('.')
+            config = self.config
+            for k in keys[:-1]:
+                if k not in config:
+                    config[k] = {}
+                config = config[k]
+            config[keys[-1]] = value
+            self._save_config(self.config)
 
 # Initialize configuration
 config_manager = ConfigManager()
