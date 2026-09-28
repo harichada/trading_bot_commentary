@@ -1,7 +1,7 @@
 def _cfg(monkeypatch, **env):
     for k in ("ENABLE_STRATEGY_FIT_GATE", "STRATEGY_FIT_SHADOW", "STRATEGY_FIT_PATH", "STRATEGY_FIT_MAX_AGE_DAYS",
               "FIT_LANES_ENABLED", "FIT_LANE_LIVE_ENTRIES_ENABLED", "SWING_ALLOW_OVERNIGHT", "SWING_MAX_HOLD_SESSIONS",
-              "STRATEGY_HUNT_DATA_ROOT", "STRATEGY_FIT_REGIME_ROWS"):
+              "STRATEGY_HUNT_DATA_ROOT", "STRATEGY_FIT_REGIME_ROWS", "FIT_LANE_LIVE_ALLOWLIST"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -39,3 +39,30 @@ def test_env_overrides(monkeypatch):
     assert c.FIT_LANES_ENABLED == ("orb", "vwap_reversion") and c.FIT_LANE_LIVE_ENTRIES_ENABLED == ("orb",)
     assert c.SWING_ALLOW_OVERNIGHT is True and c.SWING_MAX_HOLD_SESSIONS == 5 and c.STRATEGY_FIT_PATH == "/tmp/x.json"
     assert c.STRATEGY_HUNT_DATA_ROOT == "/srv/hunt" and c.STRATEGY_FIT_REGIME_ROWS is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v-go-live-5k-2026-09-28 (Task 2): the sleeve live allowlist
+# ──────────────────────────────────────────────────────────────────────
+
+def test_fit_lane_live_allowlist_defaults_to_off(monkeypatch):
+    """Default "" -> no (family, side) is admitted by the allowlist, so the lane keeps the
+    pre-existing walk-forward-PASS-only rule byte for byte."""
+    c = _cfg(monkeypatch)
+    assert c.FIT_LANE_LIVE_ALLOWLIST == ()
+
+
+def test_fit_lane_live_allowlist_env_override(monkeypatch):
+    c = _cfg(monkeypatch, FIT_LANE_LIVE_ALLOWLIST="mr_20d:long, mom_12_1:long:risk_on|mixed")
+    assert c.FIT_LANE_LIVE_ALLOWLIST == ("mr_20d:long", "mom_12_1:long:risk_on|mixed")
+
+
+def test_fit_lane_live_allowlist_parses_into_admission_entries(monkeypatch):
+    """The config property hands raw entries through; `strategies.fit_lane_admission` owns the
+    grammar (so `core` never has to know what a regime is)."""
+    from strategies.fit_lane_admission import AllowEntry, parse_allowlist
+    c = _cfg(monkeypatch, FIT_LANE_LIVE_ALLOWLIST="mr_20d:long,mom_12_1:long:risk_on|mixed")
+    assert parse_allowlist(c.FIT_LANE_LIVE_ALLOWLIST) == (
+        AllowEntry("mr_20d", "long", ()),
+        AllowEntry("mom_12_1", "long", ("risk_on", "mixed")),
+    )

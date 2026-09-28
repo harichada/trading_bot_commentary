@@ -9,11 +9,15 @@ inputs. `strategies/fit_lane.py` re-exports these names, so
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import time as dt_time
 from typing import Any, Iterable, Optional
 
+import numpy as np
 import pandas as pd
+
+logger = logging.getLogger("TradingBot")
 
 _NEWS_FRAME_COLUMNS = ["created_at", "headline", "source", "sentiment"]
 
@@ -156,3 +160,75 @@ def with_daily_placeholder(daily: pd.DataFrame, session_date: pd.Timestamp) -> p
     out = pd.concat([daily, row]).sort_index()
     out.attrs = dict(daily.attrs)
     return out
+
+
+# ── v-go-live-5k-2026-09-28 (Task 2): the nightly universe-context slice, aligned ──
+# The research context is one row per session per symbol, and the nightly export runs after the
+# close — so at a session's open the newest row is the *previous* session's. That is the
+# known-at-open contract the columns are built for (every one of them is computed through a prior
+# close, see research/strategy_hunt/context.py), which is why the row may be carried forward onto
+# the new session rather than leaving every ctx_* column NaN and every factor family mute.
+#
+# Two limits keep "carried forward" honest:
+#   * CTX_MAX_CARRY_SESSIONS — past this many business days of staleness the row is dropped
+#     entirely, so a broken nightly refresh makes the factor lanes stand down instead of trading a
+#     stale cross-section.
+#   * _SESSION_LOCAL_CTX — columns that describe the session they are dated for (the gap, the
+#     opening rvol and its cross-sectional rank, today's/yesterday's earnings and surprise, the
+#     24h news window). Yesterday's value is not a lagged reading of today's, it is a different
+#     session's fact, so those are NaN on a carried row — exactly what the lane had before this
+#     change, since it passed no context at all.
+CTX_MAX_CARRY_SESSIONS = 3
+
+_SESSION_LOCAL_CTX = (
+    "rvol_open5", "rvol_open15", "rvol_rank5", "gap_pct",
+    "earnings_today", "earnings_prev", "eps_surprise_pct",
+    "news_count_24h", "news_sent_24h",
+)
+
+
+def align_context(context: Optional[pd.DataFrame],
+                  bar_index: Optional[pd.Index]) -> Optional[pd.DataFrame]:
+    """The context slice reindexed onto the session dates present in `bar_index`.
+
+    Rows whose date is in the slice pass through untouched. A session with no row of its own
+    takes the most recent earlier row (the one-session lag), with `_SESSION_LOCAL_CTX` masked;
+    beyond `CTX_MAX_CARRY_SESSIONS` business days of staleness the whole row is NaN.
+
+    None (rather than an empty frame) when there is nothing to align, so the caller can leave
+    `indicator_frame(context=...)` alone and the ctx_* columns simply absent. Never mutates
+    `context`, never raises on an unexpected shape.
+    """
+    if context is None or getattr(context, "empty", True):
+        return None
+    if bar_index is None or len(bar_index) == 0:
+        return None
+    try:
+        dates = pd.DatetimeIndex(pd.to_datetime(bar_index)).normalize().unique().sort_values()
+        src = context.copy()
+        src.index = pd.DatetimeIndex(pd.to_datetime(src.index)).normalize()
+        src = src[~src.index.duplicated(keep="last")].sort_index()
+        out = src.reindex(dates, method="ffill")
+        # Business-day staleness of the row each session resolved to (NaT where nothing precedes).
+        resolved = pd.Series(src.index, index=src.index).reindex(dates, method="ffill")
+        filled = resolved.notna().to_numpy()
+        gap = np.zeros(len(dates), dtype=float)
+        gap[~filled] = np.inf
+        if filled.any():
+            gap[filled] = np.busday_count(
+                resolved[filled].to_numpy().astype("datetime64[D]"),
+                dates[filled].to_numpy().astype("datetime64[D]"),
+            )
+        carried = gap > 0
+        too_stale = gap > CTX_MAX_CARRY_SESSIONS
+        for column in out.columns:
+            mask = too_stale if column not in _SESSION_LOCAL_CTX else (carried | too_stale)
+            if mask.any():
+                out[column] = out[column].where(~mask)
+        out.index.name = "date"
+        return out
+    except Exception:
+        # The slice is an optimization on a trading path: a shape the exporter never wrote must
+        # degrade to "no context", exactly as a missing file does.
+        logger.debug("align_context: unusable context slice", exc_info=True)
+        return None

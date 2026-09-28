@@ -30,6 +30,16 @@ v-strategy-fit-review2-2026-09-25 (whole-branch review fixes):
      15-minute lead-in, and the daily frame gets a placeholder row for a new
      session date so `bar_of_day == 0` families are reachable live.
   Minor. `_clamp` and the best-row comparison both guard NaN.
+
+v-go-live-5k-2026-09-28 (Task 2): sleeve live admission and live context.
+  1. admission is "walk-forward PASS **or** allowlisted on a non-FAIL row" — the rule, the
+     `FIT_LANE_LIVE_ALLOWLIST` grammar and the regime read all live in
+     strategies/fit_lane_admission.py. The reason ("pass"/"allowlist") and the regime are
+     audited on the decision line and in the emitted `reasoning`.
+  2. `indicator_frame` finally gets a `context=` frame (the nightly universe-context slice for
+     this symbol), without which every `ctx_*` column was absent and the factor/in-play
+     families could not fire live at all.
+Both are inert while `FIT_LANE_LIVE_ALLOWLIST` is "" and the context file is absent.
 """
 from __future__ import annotations
 
@@ -43,7 +53,9 @@ from typing import Any, Callable, Iterable, Optional, Tuple
 
 import pandas as pd
 
+from core.config import Config
 from core.models import MarketData, SignalType, TradingSignal
+from core.strategy_fit_bars import load_context_slice
 from strategies.base import TradingStrategyWithCommentary
 from strategies.families.common import Family, median_params
 from strategies.families.indicators import closed_bars, indicator_frame
@@ -61,13 +73,24 @@ def ledger_path(family: str, ledger_dir: Path = LEDGER_DIR) -> Path:
 
 
 # v-strategy-fit-review2-2026-09-25: the pure frame/verdict helpers live in
-# strategies/fit_lane_frames.py (400-line file budget); re-exported here so
-# existing `from strategies.fit_lane import ...` call sites keep working.
+# strategies/fit_lane_frames.py, and (v-go-live-5k-2026-09-28) the admission rule with the
+# signal it shapes lives in strategies/fit_lane_admission.py — the 400-line file budget.
+# Both are re-exported here so existing `from strategies.fit_lane import ...` call sites
+# (and `_clamp`, which only the tests use directly) keep working.
+from strategies.fit_lane_admission import (  # noqa: E402
+    admissible_sides,
+    admit,
+    entry_to_signal,
+    parse_allowlist,
+    read_live_regime,
+    safe_regime,
+)
 from strategies.fit_lane_frames import (  # noqa: E402
     _FRESHNESS_LIMIT,
     _RTH_CLOSE,
     _clamp,
     _to_naive_et,
+    align_context,
     live_eligible,
     news_frame_from_items,
     next_rth_bar,
@@ -76,43 +99,10 @@ from strategies.fit_lane_frames import (  # noqa: E402
 )
 
 __all__ = [
-    "FitLaneStrategy", "entry_to_signal", "ledger_path", "live_eligible",
-    "news_frame_from_items", "next_rth_bar", "with_daily_placeholder",
+    "FitLaneStrategy", "align_context", "entry_to_signal", "ledger_path", "live_eligible",
+    "news_frame_from_items", "next_rth_bar", "read_live_regime", "with_daily_placeholder",
     "with_synthetic_next_bar",
 ]
-
-
-def entry_to_signal(entry: Entry, family: str, params: dict, verdict: str, score: float, symbol: str) -> TradingSignal:
-    """`entry.symbol` falls back to "" when the family's make_entry() call
-    didn't pass one explicitly (the common case) — `symbol` is the
-    market-data symbol the adapter is actually evaluating, and always wins
-    when entry.symbol is empty."""
-    strength = _clamp(float(score) * 2.0, 0.2, 1.0)
-    is_day_trade = entry.hold_kind == "intraday"
-    reasoning = {
-        "strategy": f"fit:{family}",
-        "fit_family": family,
-        "fit_params": params,
-        "fit_verdict": verdict,
-        "hold_kind": entry.hold_kind,
-        "entry_pattern": entry.tag,
-        "max_hold_sessions": None if is_day_trade else entry.time_stop,
-        "is_day_trade": is_day_trade,
-        "day_trade_size_multiplier": 0.5 if is_day_trade else 1.0,
-        "flatten_hour": 15 if is_day_trade else None,
-        "strategy_size_multiplier": 1.0,
-    }
-    return TradingSignal(
-        symbol=entry.symbol or symbol,
-        signal_type=SignalType.BUY if entry.side == "long" else SignalType.SELL,
-        strength=strength,
-        entry_price=entry.entry_px,
-        stop_loss=entry.stop_px,
-        take_profit=entry.target_px,
-        position_size=0,
-        reasoning=reasoning,
-        confidence=strength,
-    )
 
 
 class FitLaneStrategy(TradingStrategyWithCommentary):
@@ -128,6 +118,9 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         live_families: Callable[[], tuple],
         ledger_dir: Path = LEDGER_DIR,
         clock: Optional[Callable[[], pd.Timestamp]] = None,
+        allowlist: Optional[Callable[[], Any]] = None,
+        context_source: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
+        regime_source: Optional[Callable[[str], str]] = None,
     ) -> None:
         super().__init__(commentary)
         # v-strategy-fit-review-2026-09-25: resolved eagerly so a typo'd
@@ -143,6 +136,13 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         self._ledger_dir = Path(ledger_dir)
         self._clock = clock or (lambda: pd.Timestamp.now(tz="America/New_York").tz_localize(None))
         self._news_bus = None
+        # v-go-live-5k-2026-09-28 (Task 2). Callables read per tick (not values captured at
+        # registration), so a flag change needs no restart and tests can inject a regime and a
+        # context frame. Defaults: the flag, the configured research root, the indices cache.
+        self._allowlist = allowlist or (lambda: Config().FIT_LANE_LIVE_ALLOWLIST)
+        self._context_source = context_source or (
+            lambda sym: load_context_slice(Config().STRATEGY_HUNT_DATA_ROOT, sym))
+        self._regime_source = regime_source or (lambda sym: read_live_regime(sym))
 
     def set_news_bus(self, bus) -> None:
         self._news_bus = bus
@@ -153,7 +153,11 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
 
         row_long = self._fit.lookup(symbol, family, "long")
         row_short = self._fit.lookup(symbol, family, "short")
-        if row_long is None and row_short is None:
+        # v-go-live-5k-2026-09-28 (Task 2): an allowlisted (family, side) is admitted on an
+        # *absent* row too (nothing measured, so nothing rejected), so a symbol with no row is
+        # only skipped here when the allowlist has nothing to say about this live family —
+        # every case while the flag is "".
+        if row_long is None and row_short is None and not self._admissible_sides():
             self._log_decision(market_data, "skip", "fit_no_row", skip_snapshot=True)
             return None
 
@@ -241,12 +245,24 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             news_items = []
         news = news_frame_from_items(news_items)
 
-        ind = indicator_frame(bars, daily, spy5)
+        # v-go-live-5k-2026-09-28 (Task 2): the nightly universe-context slice, carried onto
+        # this session (align_context) — without it the factor/in-play families read all-NaN
+        # gates. A failure is "no context", never an error: those families just stay mute.
+        context = None
+        try:
+            ctx_slice = await asyncio.to_thread(self._context_source, symbol)
+            context = align_context(ctx_slice, bars.index)
+        except Exception as ctx_exc:
+            logger.debug("fit_lane: context slice unavailable for %s: %s", symbol, ctx_exc)
+
+        ind = indicator_frame(bars, daily, spy5, context=context)
         entries = self._fam.fn(bars, ind, daily, news, params)
 
         now_ts = bars.index[-1]
         rows_by_side = {"long": row_long, "short": row_short}
-        kept = [e for e in entries if e.entry_ts == now_ts and rows_by_side.get(e.side) is not None]
+        allow_sides = self._admissible_sides()
+        kept = [e for e in entries if e.entry_ts == now_ts
+                and (rows_by_side.get(e.side) is not None or e.side in allow_sides)]
         if not kept:
             self._log_decision(market_data, "skip", "no_entry_now", skip_snapshot=True)
             return None
@@ -268,12 +284,24 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         # or cold-start row keeps the entry in shadow (ledger line already
         # written above) instead of passing the verdict through as metadata
         # on a live signal.
-        live_kept = [e for e in kept if live_eligible(rows_by_side.get(e.side))]
+        #
+        # v-go-live-5k-2026-09-28 (Task 2): or the allowlist admits it — same shadow
+        # fall-through when it doesn't. `admission_by_side` records which rule let each side
+        # through, so the emitted signal can say which.
+        regime = safe_regime(self._regime_source, symbol)
+        allowlist = parse_allowlist(self._allowlist())
+        admission_by_side = {}
+        for side in ("long", "short"):
+            reason = admit(rows_by_side.get(side), family, side, regime, allowlist)
+            if reason is not None:
+                admission_by_side[side] = reason
+        live_kept = [e for e in kept if e.side in admission_by_side]
         if not live_kept:
             self._log_decision(
                 market_data, "shadow", "fit_lane_shadow_verdict",
                 fit_verdict=getattr(best_row, "verdict", ""),
                 fit_source=getattr(best_row, "source", ""),
+                market_context_regime=regime,
                 would_entry_price=best_entry.entry_px,
                 would_stop_loss=best_entry.stop_px,
                 would_take_profit=best_entry.target_px,
@@ -281,9 +309,20 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             return None
 
         live_entry, live_row = self._best_of(live_kept, rows_by_side)
+        admission = admission_by_side[live_entry.side]
         action = "signal_buy" if live_entry.side == "long" else "signal_sell"
-        self._log_decision(market_data, action, "fit_lane_live")
-        return entry_to_signal(live_entry, family, params, live_row.verdict, live_row.score, symbol)
+        self._log_decision(market_data, action, "fit_lane_live",
+                           fit_lane_admission=admission, market_context_regime=regime,
+                           fit_verdict=getattr(live_row, "verdict", ""))
+        return entry_to_signal(live_entry, family, params, str(getattr(live_row, "verdict", "")),
+                               getattr(live_row, "score", float("nan")), symbol,
+                               admission=admission, regime=regime)
+
+    def _admissible_sides(self) -> Tuple[str, ...]:
+        """Sides the allowlist may admit for this family — () while the flag is "" or the family
+        is shadow-only, which is what keeps the `fit_no_row` early return and the `kept` filter
+        behaving exactly as they did before."""
+        return admissible_sides(self._family_name, self._live_families, self._allowlist)
 
     def _append_ledger(self, now_ts, symbol: str, kept: list, rows_by_side: dict, params: dict) -> Tuple[Entry, Any]:
         """Picks the best-scoring kept entry and appends one ledger line per
@@ -296,7 +335,10 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             self._ledger_dir.mkdir(parents=True, exist_ok=True)
             with open(ledger_path(self._family_name, self._ledger_dir), "a") as fh:
                 for entry in kept:
-                    row = rows_by_side[entry.side]
+                    # v-go-live-5k-2026-09-28 (Task 2): an allowlisted side may have no row at
+                    # all, so the verdict/score fields are read defensively ("" / null) rather
+                    # than indexed — the ledger line is the evidence trail either way.
+                    row = rows_by_side.get(entry.side)
                     fh.write(json.dumps({
                         "ts": now_ts.isoformat(),
                         "symbol": symbol,
@@ -308,8 +350,8 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
                         "hold_kind": entry.hold_kind,
                         "tag": entry.tag,
                         "params": params,
-                        "verdict": row.verdict,
-                        "score": row.score,
+                        "verdict": str(getattr(row, "verdict", "")),
+                        "score": getattr(row, "score", None),
                     }) + "\n")
         except Exception as exc:
             logger.warning("fit_lane: ledger write failed for %s/%s: %s", self._family_name, symbol, exc)
@@ -334,7 +376,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         best_entry: Optional[Entry] = None
         best_row = None
         for entry in entries:
-            row = rows_by_side[entry.side]
+            row = rows_by_side.get(entry.side)      # None for an allowlisted, unmeasured side
             if best_row is None or _score(row) > _score(best_row):
                 best_entry, best_row = entry, row
         return best_entry, best_row

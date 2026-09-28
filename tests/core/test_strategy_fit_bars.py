@@ -208,3 +208,85 @@ def test_merged_window_makes_rvol_and_or_range_resolve():
     last_session = merged.loc[merged.index.normalize() == pd.Timestamp("2025-09-09")]
     assert last_session["rvol"].notna().any()
     assert last_session["or30_range_avg20"].notna().any()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v-go-live-5k-2026-09-28 (Task 2): the nightly universe-context slice
+# ──────────────────────────────────────────────────────────────────────
+
+def _write_universe_context(root, rows):
+    """`<root>/context/universe_daily.parquet` in the exporter's own shape (date/symbol columns,
+    no index) -- see research/strategy_hunt/context.py::build_universe_context."""
+    from pathlib import Path
+    out = Path(root) / "context"
+    out.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(out / "universe_daily.parquet", index=False)
+    return out / "universe_daily.parquet"
+
+
+def _ctx_rows(symbol, dates, **cols):
+    return [{"date": pd.Timestamp(d), "symbol": symbol,
+             **{k: v for k, v in cols.items()}} for d in dates]
+
+
+def test_load_context_slice_returns_only_the_symbols_rows(tmp_path):
+    from core.strategy_fit_bars import load_context_slice
+    from strategies.families.context import CTX_COLUMNS
+
+    _write_universe_context(tmp_path,
+                            _ctx_rows("NVDA", ["2025-11-27", "2025-11-28"], mom_rank_12_1=0.95, gap_pct=1.0)
+                            + _ctx_rows("AAPL", ["2025-11-27", "2025-11-28"], mom_rank_12_1=0.10, gap_pct=2.0))
+
+    out = load_context_slice(str(tmp_path), "nvda")          # case-insensitive, like load_history
+    assert out is not None
+    assert list(out.index) == [pd.Timestamp("2025-11-27"), pd.Timestamp("2025-11-28")]
+    assert out.index.name == "date"
+    assert list(out.columns) == list(CTX_COLUMNS)             # every ctx column, NaN where absent
+    assert out["mom_rank_12_1"].tolist() == [0.95, 0.95]
+    assert out["vol_rank_60"].isna().all()
+    assert "symbol" not in out.columns and "date" not in out.columns
+
+
+def test_load_context_slice_sorts_and_deduplicates_dates(tmp_path):
+    from core.strategy_fit_bars import load_context_slice
+
+    _write_universe_context(tmp_path, [
+        {"date": pd.Timestamp("2025-11-28"), "symbol": "NVDA", "mom_rank_12_1": 0.1},
+        {"date": pd.Timestamp("2025-11-27"), "symbol": "NVDA", "mom_rank_12_1": 0.2},
+        {"date": pd.Timestamp("2025-11-28"), "symbol": "NVDA", "mom_rank_12_1": 0.9},   # rebuild wins
+    ])
+    out = load_context_slice(str(tmp_path), "NVDA")
+    assert out.index.is_monotonic_increasing and not out.index.has_duplicates
+    assert out["mom_rank_12_1"].tolist() == [0.2, 0.9]
+
+
+def test_load_context_slice_missing_file_symbol_or_root_is_none(tmp_path):
+    from core.strategy_fit_bars import load_context_slice
+
+    assert load_context_slice(str(tmp_path), "NVDA") is None
+    assert load_context_slice(str(tmp_path / "nope"), "NVDA") is None
+    _write_universe_context(tmp_path, _ctx_rows("NVDA", ["2025-11-28"], mom_rank_12_1=0.5))
+    assert load_context_slice(str(tmp_path), "TSLA") is None
+
+
+def test_load_context_slice_never_raises_on_garbage(tmp_path):
+    from core.strategy_fit_bars import load_context_slice
+
+    (tmp_path / "context").mkdir()
+    (tmp_path / "context" / "universe_daily.parquet").write_text("not parquet at all")
+    assert load_context_slice(str(tmp_path), "NVDA") is None
+    assert load_context_slice(None, "NVDA") is None
+
+
+def test_load_context_slice_without_a_date_column_is_none(tmp_path):
+    from core.strategy_fit_bars import load_context_slice
+
+    _write_universe_context(tmp_path, [{"symbol": "NVDA", "mom_rank_12_1": 0.5}])
+    assert load_context_slice(str(tmp_path), "NVDA") is None
+
+
+def test_core_strategy_fit_bars_does_not_import_research():
+    import pathlib
+    import re
+    src = pathlib.Path("core/strategy_fit_bars.py").read_text()
+    assert not re.search(r"^\s*(from|import)\s+research\b", src, re.M)

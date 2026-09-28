@@ -69,3 +69,16 @@ def test_engine_passes_the_live_regime_into_the_fit_gate():
     call = src[gate:gate + 400]
     assert "regime=_fit_regime" in call
     assert src.index("_fit_regime =") < gate
+
+
+def test_engine_wires_the_allowlist_and_context_slice_into_the_fit_lanes():
+    """v-go-live-5k-2026-09-28 (Task 2): the lanes read FIT_LANE_LIVE_ALLOWLIST for admission and
+    the nightly universe-context slice for the `ctx_*` families, both through callables so the
+    flag is re-read live and the slice is cached per export."""
+    src = Path("core/engine.py").read_text()
+    assert "allowlist=lambda: Config().FIT_LANE_LIVE_ALLOWLIST" in src
+    assert "context_source=self._fit_context_source" in src
+    assert "def _fit_context_source(self, symbol" in src
+    assert "load_fit_context_slice(root, symbol)" in src
+    ctor = src.index("_lane = FitLaneStrategy(")
+    assert src.index("allowlist=lambda: Config().FIT_LANE_LIVE_ALLOWLIST") > ctor

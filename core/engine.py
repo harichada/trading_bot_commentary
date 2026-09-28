@@ -36,6 +36,8 @@ from core.strategy_fit import StrategyFit
 # v-strategy-fit-review2-2026-09-25 (Important 3): nightly research Parquet
 # history spliced under the provider's 10-day minute window.
 from core.strategy_fit_bars import (
+    CONTEXT_RELPATH as FIT_CONTEXT_RELPATH,
+    load_context_slice as load_fit_context_slice,
     load_history as load_fit_history,
     merge_daily as merge_fit_daily,
     merge_history as merge_fit_history,
@@ -407,8 +409,13 @@ class TradingEngineWithCommentary:
         self._fit_bars_cache: dict[str, tuple] = {}
         for _fam in Config().FIT_LANES_ENABLED:
             try:
+                # v-go-live-5k-2026-09-28 (Task 2): the allowlist is read per tick (flag
+                # changes need no restart) and the nightly universe-context slice feeds the
+                # ctx_*-reading families their gating columns.
                 _lane = FitLaneStrategy(self.commentary, _fam, self._strategy_fit, self._fit_bars_source,
-                                        lambda: Config().FIT_LANE_LIVE_ENTRIES_ENABLED)
+                                        lambda: Config().FIT_LANE_LIVE_ENTRIES_ENABLED,
+                                        allowlist=lambda: Config().FIT_LANE_LIVE_ALLOWLIST,
+                                        context_source=self._fit_context_source)
                 self.strategies.append(_lane)
                 logger.info("fit_lane: registered family=%s live=%s", _fam, _fam in Config().FIT_LANE_LIVE_ENTRIES_ENABLED)
             except Exception as _fl_exc:
@@ -546,6 +553,27 @@ class TradingEngineWithCommentary:
             result = (pd.DataFrame(), pd.DataFrame())
         self._fit_bars_cache[symbol] = result
         return result
+
+    # v-go-live-5k-2026-09-28 (Task 2): context slice source for the FitLaneStrategy adapters.
+    # One symbol-filtered Parquet read (~20-60ms) per symbol, cached for the life of the export
+    # (keyed on the file's mtime/size) rather than per analysis pass: the nightly build changes it
+    # once a day, so re-reading it every pass would be pure overhead. Never raises —
+    # load_context_slice returns None on any failure and the lane then runs without ctx_* columns.
+    def _fit_context_source(self, symbol: str) -> Optional[pd.DataFrame]:
+        root = Config().STRATEGY_HUNT_DATA_ROOT
+        try:
+            _ctx_path = Path(root).joinpath(*FIT_CONTEXT_RELPATH)
+            _stat = _ctx_path.stat()
+            stamp = (str(_ctx_path), _stat.st_mtime, _stat.st_size)
+        except OSError:
+            stamp = (str(root), None, None)
+        cached = getattr(self, "_fit_ctx_cache", None)
+        if cached is None or cached[0] != stamp:
+            cached = (stamp, {})
+            self._fit_ctx_cache = cached
+        if symbol not in cached[1]:
+            cached[1][symbol] = load_fit_context_slice(root, symbol)
+        return cached[1][symbol]
 
     # ── v-playbook-desk-b2-2026-09-25 (Task 5): desk readers for the router hooks ──
     # Each is cached for _DESK_CACHE_SEC so the per-signal hooks cost one small

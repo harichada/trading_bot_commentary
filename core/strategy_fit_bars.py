@@ -30,6 +30,8 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
+from strategies.families.context import CTX_COLUMNS
+
 logger = logging.getLogger(__name__)
 
 BARS5_SUBDIR = "bars5"
@@ -147,3 +149,57 @@ def load_history(root: str, symbol: str) -> Tuple[Optional[pd.DataFrame], Option
     except Exception:
         logger.debug("strategy_fit_bars: load_history failed for %s under %s", symbol, root, exc_info=True)
         return None, None
+
+
+# ── v-go-live-5k-2026-09-28 (Task 2): the nightly universe-context slice ──
+# `<root>/context/universe_daily.parquet` (research/strategy_hunt/context.py's
+# build_universe_context) carries one row per session per symbol with the CTX_COLUMNS the
+# `ctx_*`-reading families need — cross-sectional momentum and volatility ranks, relative
+# strength, ADV buckets, the opening-window rvol, earnings and news counts. The live fit lane
+# never loaded it, so every one of those columns was absent and `mom_12_1` / `low_vol_trend` /
+# the in-play families could not fire live at all.
+#
+# Read here (not imported from research) for the same reason as load_history: `core` must not
+# depend on `research`, it just reads the Parquet that pipeline writes. The pyarrow pushdown
+# filter keeps one symbol from pulling the whole universe (~40MB) into memory.
+CONTEXT_RELPATH = ("context", "universe_daily.parquet")
+
+
+def load_context_slice(root: str, symbol: str) -> Optional[pd.DataFrame]:
+    """One symbol's universe-context rows, indexed by normalized session date, columns exactly
+    `CTX_COLUMNS` (NaN for any the export predates).
+
+    None when the root, the file, the symbol or the `date` column is missing, and on any read
+    failure — this runs on the trading path, so "no context" is always an acceptable answer and
+    an exception never is. Callers align it onto their bar index with
+    `strategies.fit_lane_frames.align_context`.
+    """
+    try:
+        path = Path(root).joinpath(*CONTEXT_RELPATH)
+        if not path.is_file():
+            return None
+        sym = str(symbol).strip().upper()
+        if not sym:
+            return None
+        frame = pd.read_parquet(path, engine="pyarrow", filters=[("symbol", "==", sym)])
+        if frame is None or frame.empty or "date" not in frame.columns:
+            return None
+        idx = pd.DatetimeIndex(pd.to_datetime(frame["date"], errors="coerce"))
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_convert("America/New_York").tz_localize(None)
+        out = frame.drop(columns=[c for c in ("date", "symbol") if c in frame.columns])
+        out.index = idx.normalize()
+        out.index.name = "date"
+        out = out[out.index.notna()]
+        if out.empty:
+            return None
+        # A rebuild that appended rather than replaced leaves two rows for one date; the later
+        # one written is the current view (same rule as `_merge`).
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+        return out.reindex(columns=list(CTX_COLUMNS))
+    except Exception:
+        # Missing pyarrow, an unreadable/corrupt file, a root that is not a path, an export
+        # without a `symbol` column — the lane carries on with no context.
+        logger.debug("strategy_fit_bars: load_context_slice failed for %r under %r", symbol, root,
+                     exc_info=True)
+        return None
