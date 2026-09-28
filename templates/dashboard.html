@@ -4014,6 +4014,10 @@
             return d.toLocaleString();
         }
 
+        function rcDisplayValue(v) {
+            return Array.isArray(v) ? v.join(', ') : String(v);
+        }
+
         async function loadRiskConsole() {
             const groups = document.getElementById('rc-groups');
             try {
@@ -4069,12 +4073,12 @@
                 badges += `<span style="margin-left:0.4rem; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.7rem;
                     background:oklch(0.78 0.16 80 / 0.15); color:oklch(0.85 0.12 80);">
                     pending until ${escapeHtml(effLocal)}
-                    <a href="#" onclick="cancelRiskPending('${escapeHtml(k.pending.id)}'); return false;"
+                    <a href="#" data-pending-id="${escapeHtml(k.pending.id)}"
                        style="color:oklch(0.85 0.12 80); text-decoration:underline; margin-left:0.3rem;">cancel</a>
                 </span>`;
             }
 
-            const displayValue = Array.isArray(k.value) ? k.value.join(', ') : String(k.value);
+            const displayValue = rcDisplayValue(k.value);
 
             return `<tr style="border-top:1px solid var(--border);">
                 <td style="padding:0.5rem 0.4rem; color:var(--fg); font-size:0.85rem;">${escapeHtml(k.label)}${badges}</td>
@@ -4087,7 +4091,7 @@
                                font:400 0.8rem var(--font-mono);" ${disabledAttr}>
                 </td>
                 <td style="padding:0.5rem 0.4rem;">
-                    <button onclick="applyRiskKnob('${escapeHtml(k.key)}')" class="button button-primary"
+                    <button data-key="${escapeHtml(k.key)}" class="button button-primary"
                         style="padding:0.35rem 0.8rem; font-size:0.8rem;" ${disabledAttr}>Apply</button>
                 </td>
             </tr>`;
@@ -4117,7 +4121,22 @@
                 rows.forEach(k => { html += rcKnobRow(k); });
                 html += '</tbody></table>';
             });
-            document.getElementById('rc-groups').innerHTML = html || '<span style="color: var(--muted-fg);">No knobs available.</span>';
+            const container = document.getElementById('rc-groups');
+            container.innerHTML = html || '<span style="color: var(--muted-fg);">No knobs available.</span>';
+
+            // Listeners attached after innerHTML assignment (not inline onclick=""),
+            // since server-supplied key/id values are read from data-* attributes —
+            // HTML-entity escaping alone does not make an inline JS-string-literal
+            // context (onclick="fn('...')") safe against attacker-controlled values.
+            container.querySelectorAll('[data-key]').forEach(btn => {
+                btn.addEventListener('click', () => applyRiskKnob(btn.dataset.key));
+            });
+            container.querySelectorAll('[data-pending-id]').forEach(link => {
+                link.addEventListener('click', evt => {
+                    evt.preventDefault();
+                    cancelRiskPending(link.dataset.pendingId);
+                });
+            });
         }
 
         function rcKnobInputValue(key, kind) {
@@ -4237,7 +4256,7 @@
                 return;
             }
             el.innerHTML = recent.map(row => {
-                const line = `${rcFormatLocal(row.ts)} · ${row.event} · ${row.key} · ${row.old} → ${row.new} · ${row.reason || ''}`;
+                const line = `${rcFormatLocal(row.ts)} · ${row.event} · ${row.key} · ${rcDisplayValue(row.old)} → ${rcDisplayValue(row.new)} · ${row.reason || ''}`;
                 return `<div style="padding:0.2rem 0;">${escapeHtml(line)}</div>`;
             }).join('');
         }
