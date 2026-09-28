@@ -60,7 +60,7 @@ from typing import Any, Callable, Iterable, Optional, Tuple
 import pandas as pd
 
 from core.config import Config
-from core.models import MarketData, SignalType, TradingSignal
+from core.models import MarketData, TradingSignal
 from core.strategy_fit_bars import load_context_slice
 from strategies.base import TradingStrategyWithCommentary
 from strategies.families.common import Family, median_params
@@ -391,6 +391,8 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         best_row = None
         for entry in entries:
             row = rows_by_side.get(entry.side)      # None for an allowlisted, unmeasured side
-            if best_row is None or _score(row) > _score(best_row):
+            # First entry wins the seat; later ones displace it only on a strictly better score.
+            # (`best_row is None` is no longer "first iteration": an admitted unmeasured side has no row.)
+            if best_entry is None or _score(row) > _score(best_row):
                 best_entry, best_row = entry, row
         return best_entry, best_row

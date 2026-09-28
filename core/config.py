@@ -4536,10 +4536,12 @@ class Config:
 
         The grammar, the regime matching and the admission rule itself live in
         `strategies/fit_lane_admission.py` — this property only hands the raw entries through, so
-        `core` never has to know what a regime is. An allowlisted lane is still refused when the
-        symbol's own unconditional fit row is FAIL, still needs its family in
-        `FIT_LANE_LIVE_ENTRIES_ENABLED`, and still faces every downstream gate (desk limits, the
-        playbook gate, the swing overnight gate, risk sizing, the allocation cap).
+        `core` never has to know what a regime is. The symbol's own unconditional fit row is used
+        only to exclude measured losers (a row with n >= 60 and exp_r < 0 blocks; an absent or thin
+        row does not, since per-symbol FAIL verdicts are mostly sample-size floors). An allowlisted
+        lane still needs its family in `FIT_LANE_LIVE_ENTRIES_ENABLED` and still faces every
+        downstream gate (desk limits, the playbook gate, the swing overnight gate, risk sizing, the
+        allocation cap).
 
         Env `FIT_LANE_LIVE_ALLOWLIST` (comma list) wins over yaml
         `trading.fit_lane_live_allowlist` (a comma string or a list).
@@ -4581,6 +4583,87 @@ class Config:
         return parsed
 
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-wedge-fix-2026-09-28
+    # The engine must not be wedge-able by a hung HTTP call. See
+    # core/provider_calls.py, core/isolated_calls.py, core/loop_heartbeat.py.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def PROVIDER_EXECUTOR_WORKERS(self) -> int:
+        """Size of the DEDICATED thread pool every synchronous provider call
+        runs in (core/provider_calls.py).
+
+        Why dedicated: `asyncio.wait_for` abandons the await, never the
+        thread. A provider that hangs leaks its worker until the socket gives
+        up, and on 2026-09-28 those leaked threads (247 of 251 parked in
+        futex_wait) shared asyncio's DEFAULT executor with every other
+        `to_thread` caller in the process. Bounding them in their own pool
+        caps the damage at this number of stuck fetches.
+
+        8 matches QUOTE_FETCH_CONCURRENCY — the streamer is the heaviest
+        user. Raise only if legitimate provider concurrency exceeds it;
+        lowering it makes a provider stall queue calls instead of leaking
+        threads.
+        """
+        env_val = os.getenv("PROVIDER_EXECUTOR_WORKERS")
+        if env_val is not None:
+            parsed = _env_float(env_val)
+            if parsed is not None and parsed >= 1:
+                return int(parsed)
+        return int(self.manager.get('trading.provider_executor_workers', 8))
+
+    @property
+    def PROVIDER_HISTORY_TIMEOUT_SEC(self) -> float:
+        """Timeout for bar/history provider calls (`get_market_data`).
+
+        Quotes get QUOTE_FETCH_TIMEOUT_SEC (3 s); a year of dailies or ten
+        days of 5-minute bars legitimately takes longer, so history calls get
+        their own budget. 10 s is generous for Schwab and still finite —
+        finite is the whole point: these calls used to have no timeout at all
+        and one of them froze the engine for a session.
+        """
+        env_val = os.getenv("PROVIDER_HISTORY_TIMEOUT_SEC")
+        if env_val is not None:
+            parsed = _env_float(env_val)
+            if parsed is not None and parsed > 0:
+                return parsed
+        return float(self.manager.get('trading.provider_history_timeout_sec', 10.0))
+
+    @property
+    def LOOP_LAG_WARN_SEC(self) -> float:
+        """Heartbeat threshold: a loop that has not pulsed for this long gets
+        a WARNING `loop_lag` line from the watchdog thread.
+
+        5 s is far above a healthy loop (the fast position loop runs at
+        POSITION_LOOP_SEC) and far below "nobody noticed for 16 hours",
+        which is what happened on 2026-09-28.
+        """
+        env_val = os.getenv("LOOP_LAG_WARN_SEC")
+        if env_val is not None:
+            parsed = _env_float(env_val)
+            if parsed is not None and parsed > 0:
+                return parsed
+        return float(self.manager.get('trading.loop_lag_warn_sec', 5.0))
+
+    @property
+    def ISOLATED_YF_ENABLED(self) -> bool:
+        """Route yfinance through the spawn-context subprocess pool
+        (core/isolated_calls.py). Default True.
+
+        yfinance-on-curl_cffi can stall inside a TLS write while holding the
+        GIL, which freezes every thread in the process — no in-process
+        timeout can recover from that, only killing another process can.
+        This flag is the operator's kill switch: set to 0 and the same calls
+        run in the bounded thread pool instead (still timeout-bounded, no
+        longer GIL-proof). It is not a feature gate — True IS the fix.
+        """
+        env_val = os.getenv("ISOLATED_YF_ENABLED")
+        if env_val is not None:
+            return env_val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.isolated_yf_enabled', True))
+
+
 # Initialize configuration
 config = Config()
 # ============================================================================
@@ -4620,14 +4703,24 @@ def setup_logging():
     if logger.handlers:
         return logger
 
+    # v-wedge-fix-2026-09-28: a spawned isolated-call child (see
+    # core/isolated_calls.py) re-imports the main module and lands here. Two
+    # processes must never own the same RotatingFileHandler — the child's
+    # rotation renames trading_bot.log out from under the live bot, which
+    # then keeps writing to the rotated file. Children log to stderr only.
+    import multiprocessing as _mp
+    _is_child = _mp.parent_process() is not None
+
     from logging.handlers import RotatingFileHandler
-    file_handler = RotatingFileHandler(
-        str(Config().LOG_PATH),
-        maxBytes=10*1024*1024,
-        backupCount=5
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(JSONFormatter())
+    file_handler = None
+    if not _is_child:
+        file_handler = RotatingFileHandler(
+            str(Config().LOG_PATH),
+            maxBytes=10*1024*1024,
+            backupCount=5
+        )
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(JSONFormatter())
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -4635,7 +4728,8 @@ def setup_logging():
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     ))
 
-    logger.addHandler(file_handler)
+    if file_handler is not None:
+        logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
     return logger
