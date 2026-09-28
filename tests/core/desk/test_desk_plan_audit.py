@@ -78,3 +78,33 @@ def test_plan_audit_reports_zero_rows_when_the_tape_came_back_empty(tmp_path):
     details = _plan_audit(tmp_path, [])
     assert details["trades_read"] == 0
     assert details["losing_day_streak"] == 0        # indistinguishable without the count
+
+
+# Go-live 2026-09-28: the user reset the losing-day streak ("start counting from today").
+# DESK_STREAK_SINCE floors the streak window so earlier sessions never count.
+def test_streak_window_is_floored_at_desk_streak_since(monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from core.loops import desk_loop as dl
+
+    seen = {}
+
+    async def fake_trades_for(date_range, db_logger):
+        seen["range"] = date_range
+        return []
+
+    monkeypatch.setattr(dl, "trades_for", fake_trades_for)
+    monkeypatch.setenv("DESK_STREAK_SINCE", "2026-09-28")
+    loop = dl.DeskLoop.__new__(dl.DeskLoop)
+    loop.engine = type("E", (), {"db_logger": None})()
+    now = datetime(2026, 9, 29, 9, 0)
+    asyncio.run(loop._recent_r(now, "2026-09-29"))
+    assert seen["range"] == ("2026-09-28", "2026-09-29")
+
+    monkeypatch.setenv("DESK_STREAK_SINCE", "garbage")
+    asyncio.run(loop._recent_r(now, "2026-09-29"))
+    assert seen["range"][0] < "2026-09-28"          # unusable value → normal lookback window
+
+    monkeypatch.delenv("DESK_STREAK_SINCE")
+    asyncio.run(loop._recent_r(now, "2026-09-29"))
+    assert seen["range"][0] < "2026-09-28"

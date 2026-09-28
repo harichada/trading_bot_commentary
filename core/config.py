@@ -4590,6 +4590,17 @@ class Config:
     # ══════════════════════════════════════════════════════════════════════════
 
     @property
+    def DESK_STREAK_SINCE(self) -> str:
+        """v-go-live-5k-2026-09-28: earliest date (YYYY-MM-DD) the desk's losing-day streak and
+        prior-session R may look back to. Empty (default) = the normal lookback window. The user
+        reset the streak at go-live ("start counting from today"), so sessions before that date
+        must not count as losing days. Env DESK_STREAK_SINCE or yaml trading.desk_streak_since."""
+        env_val = os.getenv("DESK_STREAK_SINCE")
+        if env_val is not None:
+            return env_val.strip()
+        return str(self.manager.get('trading.desk_streak_since', "") or "").strip()
+
+    @property
     def PROVIDER_EXECUTOR_WORKERS(self) -> int:
         """Size of the DEDICATED thread pool every synchronous provider call
         runs in (core/provider_calls.py).
@@ -4645,6 +4656,28 @@ class Config:
             if parsed is not None and parsed > 0:
                 return parsed
         return float(self.manager.get('trading.loop_lag_warn_sec', 5.0))
+
+    @property
+    def BROKER_CALL_TIMEOUT_SEC(self) -> float:
+        """Timeout for Schwab ORDER and ACCOUNT calls (place/get/cancel order,
+        get_orders_for_account, get_account, get_quotes).
+
+        Deliberately larger than the market-data budgets: cutting an order call
+        short is worse than waiting for it, because a timeout leaves the
+        order's fate at the broker unknown. 15 s is well past Schwab's normal
+        response (sub-second) and still finite — these calls had NO timeout at
+        all, and one of them on the loop is enough to wedge the engine
+        (2026-09-28).
+
+        On timeout the helper raises `BrokerTimeoutError` rather than returning
+        None; see core/provider_calls.py.
+        """
+        env_val = os.getenv("BROKER_CALL_TIMEOUT_SEC")
+        if env_val is not None:
+            parsed = _env_float(env_val)
+            if parsed is not None and parsed > 0:
+                return parsed
+        return float(self.manager.get('trading.broker_call_timeout_sec', 15.0))
 
     @property
     def ISOLATED_YF_ENABLED(self) -> bool:

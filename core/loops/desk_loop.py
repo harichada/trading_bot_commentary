@@ -233,9 +233,24 @@ class DeskLoop:
         tape (M2) — `trades_for` fails soft to `[]`.
         """
         start = (now.date() - timedelta(days=STREAK_LOOKBACK_DAYS)).isoformat()
+        since = self._streak_since()
+        if since and since > start:          # user reset: sessions before `since` never count
+            start = since
         trades = await trades_for((start, date), getattr(self.engine, "db_logger", None))
         streak, prev_r = steps.daily_r_stats(trades, date)
         return streak, prev_r, len(trades or [])
+
+    @staticmethod
+    def _streak_since() -> str:
+        """`Config().DESK_STREAK_SINCE` as an ISO date string, or "" when unset/unparsable."""
+        try:
+            from core.config import Config
+
+            raw = str(Config().DESK_STREAK_SINCE or "").strip()
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat() if raw else ""
+        except Exception as exc:
+            logger.warning("desk_loop: DESK_STREAK_SINCE unusable (%s); ignoring", exc)
+            return ""
 
     # ── 09:35 — the in-play list ────────────────────────────────────
 
