@@ -9,7 +9,12 @@
 # outside the process can recover it.
 #
 # WHAT IT DOES
-#   1. GET /api/status with `curl -m 30`.
+#   1. GET /api/status with `curl -m 30` and PARSE it. Healthy means all of:
+#        HTTP 200, `"bot_running": true`, and — inside the live window
+#        (09:25-16:05 ET, Mon-Fri, or WATCHDOG_REQUIRE_LIVE=1) — `"mode":
+#        "live"`. An HTTP 200 from a process whose engine thread has stopped
+#        or has fallen back to simulation is NOT healthy: that is precisely
+#        the state an operator needs to hear about.
 #   2. Two consecutive failures (state kept across cron runs) and fewer than
 #      MAX_RESTARTS_PER_DAY restarts today  ->  restart:
 #        TERM the bot, wait 20 s, KILL if still alive;
@@ -52,6 +57,10 @@ STATE="${WATCHDOG_STATE:-bot_watchdog.state}"
 MAX_RESTARTS_PER_DAY="${WATCHDOG_MAX_RESTARTS:-2}"
 FAILS_BEFORE_RESTART="${WATCHDOG_FAILS_BEFORE_RESTART:-2}"
 CURL_TIMEOUT="${WATCHDOG_CURL_TIMEOUT:-30}"
+# Live-mode expectation: auto (ET clock + weekday), 1 (always), 0 (never).
+REQUIRE_LIVE="${WATCHDOG_REQUIRE_LIVE:-auto}"
+LIVE_FROM="${WATCHDOG_LIVE_FROM:-0925}"
+LIVE_TO="${WATCHDOG_LIVE_TO:-1605}"
 TERM_GRACE_SEC="${WATCHDOG_TERM_GRACE:-20}"
 BOOT_WAIT_SEC="${WATCHDOG_BOOT_WAIT:-120}"
 ENGINE_WARMUP_SEC="${WATCHDOG_ENGINE_WARMUP:-25}"
@@ -85,9 +94,11 @@ log() {
     fi
 }
 
-status_code() {
-    # Echoes the HTTP status of GET /api/status, or 000 when unreachable.
-    local args=(-s -o /dev/null -w '%{http_code}' -m "$CURL_TIMEOUT")
+status_fetch() {
+    # Echoes the response body, then a final line "HTTP:<code>".
+    # The body is needed as well as the code: a 200 from a process whose
+    # engine has stopped is not health (fix round 1, Important 3).
+    local args=(-s -w '\nHTTP:%{http_code}' -m "$CURL_TIMEOUT")
     if [[ -n "${TRADING_API_KEY:-}" ]]; then
         HEADER_FILE="$(mktemp)"
         chmod 600 "$HEADER_FILE"
@@ -95,11 +106,66 @@ status_code() {
         args+=(-H "@$HEADER_FILE")
     fi
     local out
-    # curl's own -w output is "000" when it never got a response; a
-    # non-zero exit (timeout, refused) leaves it empty. Normalise both.
     out="$(curl "${args[@]}" "http://${BOT_HOST}:${BOT_PORT}/api/status" 2>/dev/null)"
     [[ -n "$HEADER_FILE" ]] && rm -f "$HEADER_FILE" && HEADER_FILE=""
-    echo "${out:-000}"
+    if [[ -z "$out" ]]; then
+        echo "HTTP:000"
+        return 0
+    fi
+    echo "$out"
+    return 0
+}
+
+status_code() {
+    # Just the code — used while waiting for a relaunched server to answer.
+    status_fetch | tail -n1 | sed 's/^HTTP://'
+    return 0
+}
+
+require_live_now() {
+    # Should `mode` be "live" right now?
+    case "$REQUIRE_LIVE" in
+        1|true|yes|on) return 0 ;;
+        0|false|no|off) return 1 ;;
+    esac
+    local hhmm dow
+    hhmm="$(TZ=America/New_York date +%H%M)"
+    dow="$(TZ=America/New_York date +%u)"     # 1=Mon .. 7=Sun
+    [[ "$dow" -ge 6 ]] && return 1
+    # 10# forces base 10 — "0925" would otherwise be read as octal.
+    if (( 10#$hhmm >= 10#$LIVE_FROM )) && (( 10#$hhmm <= 10#$LIVE_TO )); then
+        return 0
+    fi
+    return 1
+}
+
+json_str() {
+    # json_str <key> <body> -> the string value, or "" when absent.
+    printf '%s' "$2" \
+        | grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+        | head -1 | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+check_health() {
+    # Echoes "ok" or a reason, followed by " http=<code> mode=<mode>".
+    local raw code body mode
+    raw="$(status_fetch)"
+    code="$(printf '%s' "$raw" | tail -n1 | sed 's/^HTTP://')"
+    body="$(printf '%s' "$raw" | sed '$d')"
+    mode="$(json_str mode "$body")"
+    if [[ "$code" != "200" ]]; then
+        echo "unreachable_or_error http=$code mode=${mode:-?}"
+        return 0
+    fi
+    if ! printf '%s' "$body" | grep -qE '"bot_running"[[:space:]]*:[[:space:]]*true'; then
+        echo "bot_not_running http=$code mode=${mode:-?}"
+        return 0
+    fi
+    if require_live_now && [[ "$mode" != "live" ]]; then
+        echo "mode_not_live http=$code mode=${mode:-?}"
+        return 0
+    fi
+    echo "ok http=$code mode=${mode:-?}"
     return 0
 }
 
@@ -121,6 +187,10 @@ post_api() {
     [[ -n "$HEADER_FILE" ]] && rm -f "$HEADER_FILE" && HEADER_FILE=""
     echo "${out:-000}"
     return 0
+}
+
+is_2xx() {
+    [[ "$1" =~ ^2[0-9][0-9]$ ]]
 }
 
 # ── state: consecutive failures + restarts booked today ────────────────
@@ -150,7 +220,15 @@ save_state() {
 }
 
 bot_pids() {
-    pgrep -f "$BOT_SCRIPT" 2>/dev/null | grep -v "^$$\$" || true
+    # Only a python interpreter actually RUNNING the bot script counts. An
+    # editor, a grep or a tail that merely has the filename on its command
+    # line must never be killed (fix round 1, Minor 7), so the full command
+    # line has to look like `… python[3] … trading_bot_commentary_updated.py`
+    # with the script at the end. The current shell is excluded explicitly.
+    pgrep -af "$BOT_SCRIPT" 2>/dev/null \
+        | grep -E "python[0-9.]*( +-[^ ]+)* +([^ ]*/)?${BOT_SCRIPT//./\\.} *$" \
+        | awk -v self="$$" '$1 != self {print $1}' \
+        || true
 }
 
 restart_bot() {
@@ -201,26 +279,47 @@ restart_bot() {
 
     code="$(post_api /api/start)"
     log "restart: POST /api/start http=$code"
+    if ! is_2xx "$code"; then
+        log "OPERATOR ACTION REQUIRED — /api/start returned http=$code; the"\
+            "server is up but the engine was not started"
+        return 1
+    fi
     sleep "$ENGINE_WARMUP_SEC"
     code="$(post_api /api/toggle-mode '{"mode":"live"}')"
     log "restart: POST /api/toggle-mode live http=$code"
-    return 0
+    if ! is_2xx "$code"; then
+        log "OPERATOR ACTION REQUIRED — /api/toggle-mode live returned"\
+            "http=$code; the engine is running but NOT in live mode"
+        return 1
+    fi
+    local health
+    health="$(check_health)"
+    log "restart: post-restart health: $health"
+    case "$health" in
+        ok*) return 0 ;;
+        *) log "OPERATOR ACTION REQUIRED — engine did not reach a healthy"\
+               "live state after the restart ($health)"
+           return 1 ;;
+    esac
 }
 
 # ── the check ──────────────────────────────────────────────────────────
-CODE="$(status_code)"
-if [[ "$CODE" == "200" ]]; then
+HEALTH="$(check_health)"
+REASON="${HEALTH%% *}"
+DETAIL="${HEALTH#* }"
+if [[ "$REASON" == "ok" ]]; then
     if [[ "$FAIL_COUNT" -gt 0 ]]; then
-        log "health ok (http=200) — clearing fail_count=$FAIL_COUNT"
+        log "health ok ($DETAIL) — clearing fail_count=$FAIL_COUNT"
+    else
+        log "health ok ($DETAIL)"
     fi
     FAIL_COUNT=0
     save_state
-    [[ "$DRY_RUN" -eq 1 ]] && log "dry-run: healthy, no action"
     exit 0
 fi
 
 FAIL_COUNT=$((FAIL_COUNT + 1))
-log "health FAILED http=$CODE fail_count=$FAIL_COUNT/$FAILS_BEFORE_RESTART restarts_today=$RESTART_COUNT/$MAX_RESTARTS_PER_DAY"
+log "health FAILED reason=$REASON $DETAIL fail_count=$FAIL_COUNT/$FAILS_BEFORE_RESTART restarts_today=$RESTART_COUNT/$MAX_RESTARTS_PER_DAY"
 
 if [[ "$FAIL_COUNT" -lt "$FAILS_BEFORE_RESTART" ]]; then
     log "waiting for a second consecutive failure before restarting"

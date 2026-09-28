@@ -55,6 +55,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timezone
 from typing import Optional
 
+# v-wedge-fix-2026-09-28 fix round 1 (Important 1): every `schwab_provider`
+# call below is reached from `strategies/builtin.py` inside
+# `generate_signal_with_commentary`, which the engine AWAITS on its own event
+# loop (core/engine.py hands `self.data_provider` to the strategies as
+# `_schwab_provider`). Synchronous and unbounded, they were the same wedge
+# vector as the engine's own call sites, just behind a different attribute
+# name. They all go through the bounded helper now; a timeout returns None and
+# each site keeps the fallback it already documented. Imported as a module (not
+# by name) so tests can shrink the budgets.
+from core import provider_calls
+
 
 # ────────────────────────────────────────────────────────────────────
 # Symbol → SPDR sector ETF mapping
@@ -511,7 +522,10 @@ def get_symbol_day_change_pct(
     # Try fetching from Schwab provider if available
     if schwab_provider is not None:
         try:
-            quote = schwab_provider.get_quote(symbol)
+            quote = provider_calls.provider_call_sync(
+                schwab_provider.get_quote, symbol,
+                site="market_context_day_change",
+            )
             if quote and 'netPercentChange' in quote:
                 net_pct = float(quote.get('netPercentChange', 0.0) or 0.0)
                 # Cache the result
@@ -670,7 +684,10 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
     # v-open30-cont-rs-from-open-2026-09-24: fetch SPY RTH open from Schwab quote
     if schwab_provider is not None:
         try:
-            spy_schwab_quote = schwab_provider.get_quote("SPY")
+            spy_schwab_quote = provider_calls.provider_call_sync(
+                schwab_provider.get_quote, "SPY",
+                site="market_context_spy_quote",
+            )
             if spy_schwab_quote and spy_schwab_quote.get('open', 0) > 0:
                 spy_rth_open = float(spy_schwab_quote['open'])
         except Exception as exc:
@@ -691,13 +708,18 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
     # Calculate VWAP from bars if not cached or stale
     if spy_vwap is None and schwab_provider is not None:
         try:
-            bars_df = schwab_provider.get_market_data(
+            bars_df = provider_calls.provider_call_sync(
+                schwab_provider.get_market_data,
                 "SPY",
                 period_type="day",
                 period=1,
                 frequency_type="minute",
                 frequency=1,
+                timeout=provider_calls.history_timeout(),
+                site="market_context_spy_vwap_bars",
             )
+            # None (timeout) is handled inside the VWAP helper — no VWAP this
+            # pass, same as an empty frame.
             calculated_vwap = _calculate_session_vwap_from_bars(bars_df)
             if calculated_vwap is not None and calculated_vwap > 0:
                 spy_vwap = calculated_vwap
@@ -797,7 +819,10 @@ def get_rs_from_open_context(
     # Get symbol's RTH open from Schwab quote
     if schwab_provider is not None:
         try:
-            sym_quote = schwab_provider.get_quote(symbol)
+            sym_quote = provider_calls.provider_call_sync(
+                schwab_provider.get_quote, symbol,
+                site="market_context_symbol_rth_open",
+            )
             if sym_quote and sym_quote.get('open', 0) > 0:
                 sym_rth_open = float(sym_quote['open'])
                 source = "schwab"
@@ -1024,12 +1049,15 @@ def get_inmove_turn_context(
 
     if bars_df is None and schwab_provider is not None:
         try:
-            bars_df = schwab_provider.get_market_data(
+            bars_df = provider_calls.provider_call_sync(
+                schwab_provider.get_market_data,
                 "SPY",
                 period_type="day",
                 period=1,
                 frequency_type="minute",
                 frequency=1,
+                timeout=provider_calls.history_timeout(),
+                site="market_context_inmove_bars",
             )
             if bars_df is not None and not bars_df.empty:
                 _SPY_BARS_CACHE["bars_data"] = {

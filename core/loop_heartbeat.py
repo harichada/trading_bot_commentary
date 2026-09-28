@@ -45,6 +45,11 @@ logger = logging.getLogger("TradingBot")
 DEFAULT_WARN_INTERVAL_SEC: float = 60.0
 #: How often the watchdog thread wakes up.
 DEFAULT_CHECK_INTERVAL_SEC: float = 2.0
+#: v-wedge-fix-2026-09-28 fix round 1 (Minor 6): no warning in a loop's first
+#: half-minute. Start-up is legitimately lumpy — building the engine alone takes
+#: ~13 s — and a line that cries wolf at every boot trains the operator to
+#: ignore it.
+DEFAULT_STARTUP_GRACE_SEC: float = 30.0
 
 
 def _config_warn_sec() -> float:
@@ -68,12 +73,15 @@ class LoopHeartbeat:
         clock: Optional[Callable[[], float]] = None,
         warn_sec: Optional[float] = None,
         warn_interval_sec: float = DEFAULT_WARN_INTERVAL_SEC,
+        startup_grace_sec: float = DEFAULT_STARTUP_GRACE_SEC,
     ) -> None:
         self._clock: Callable[[], float] = clock or time.monotonic
         self._warn_sec: Optional[float] = warn_sec
         self._warn_interval_sec = warn_interval_sec
+        self.startup_grace_sec = startup_grace_sec
         self._lock = threading.Lock()
         self._last_beat: Dict[str, float] = {}
+        self._first_beat: Dict[str, float] = {}
         self._last_warn: Dict[str, float] = {}
         self._watchdog: Optional[threading.Thread] = None
 
@@ -81,7 +89,21 @@ class LoopHeartbeat:
 
     def beat(self, name: str) -> None:
         with self._lock:
-            self._last_beat[name] = self._clock()
+            now = self._clock()
+            self._last_beat[name] = now
+            self._first_beat.setdefault(name, now)
+
+    def forget(self, name: str) -> None:
+        """Drop a loop's registration.
+
+        Called when a heartbeat task returns or is cancelled: a loop that has
+        legitimately stopped must not produce `loop_lag` warnings for the rest
+        of the process's life.
+        """
+        with self._lock:
+            self._last_beat.pop(name, None)
+            self._first_beat.pop(name, None)
+            self._last_warn.pop(name, None)
 
     async def run(
         self,
@@ -90,12 +112,19 @@ class LoopHeartbeat:
         is_running: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Pulse `name` every `interval` seconds until `is_running()` is
-        false. Intended to be registered as a supervised task."""
-        while True:
-            if is_running is not None and not is_running():
-                return
-            self.beat(name)
-            await asyncio.sleep(interval)
+        false. Intended to be registered as a supervised task.
+
+        Always forgets the loop on the way out — a clean stop, a cancellation
+        and a crash all mean "this loop is no longer pulsing on purpose".
+        """
+        try:
+            while True:
+                if is_running is not None and not is_running():
+                    return
+                self.beat(name)
+                await asyncio.sleep(interval)
+        finally:
+            self.forget(name)
 
     # ── consumer side (runs on the watchdog thread) ───────────────────
 
@@ -125,9 +154,14 @@ class LoopHeartbeat:
         stalled: List[Tuple[str, float]] = []
         try:
             now = self._clock()
+            with self._lock:
+                first_beats = dict(self._first_beat)
             for name, lag in sorted(self.lags().items()):
                 if lag < threshold:
                     continue
+                first = first_beats.get(name)
+                if first is not None and (now - first) < self.startup_grace_sec:
+                    continue          # start-up grace — see the module notes
                 stalled.append((name, lag))
                 with self._lock:
                     last_warn = self._last_warn.get(name)

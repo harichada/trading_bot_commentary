@@ -45,7 +45,8 @@ def test_script_parses():
 def test_dry_run_against_a_dead_port_reports_and_changes_nothing(tmp_path):
     done = _run(["--dry-run"], tmp_path)
     out = done.stdout + done.stderr
-    assert "health FAILED http=000" in out
+    assert "health FAILED reason=unreachable_or_error" in out
+    assert "http=000" in out
     assert "fail_count=1/2" in out
     assert "waiting for a second consecutive failure" in out
     assert done.returncode == 1
@@ -93,3 +94,144 @@ def test_unknown_argument_is_rejected(tmp_path):
     done = _run(["--wat"], tmp_path)
     assert done.returncode == 2
     assert "unknown argument" in done.stderr
+
+
+# ── fix round 1 (Important 3): /api/status is parsed, not just counted ──
+
+import json
+import subprocess as _sp
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class _StubStatus(BaseHTTPRequestHandler):
+    payload: dict = {}
+    code: int = 200
+
+    def do_GET(self):          # noqa: N802 - stdlib naming
+        body = json.dumps(self.payload).encode()
+        self.send_response(self.code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):         # noqa: N802
+        self.do_GET()
+
+    def log_message(self, *args):   # keep pytest output clean
+        return
+
+
+def _serve(payload, code=200):
+    """A localhost stub of /api/status. Offline by construction."""
+    handler = type("_H", (_StubStatus,), {"payload": payload, "code": code})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def _run_against(payload, tmp_path, code=200, extra_env=None):
+    server = _serve(payload, code)
+    try:
+        port = server.server_address[1]
+        env = {"TRADING_BOT_PORT": str(port)}
+        env.update(extra_env or {})
+        return _run(["--dry-run"], tmp_path, extra_env=env)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+LIVE_OK = {
+    "status": "success", "bot_running": True, "mode": "live",
+    "positions_count": 2, "schwab_connected": True,
+}
+
+
+def test_a_live_running_engine_is_healthy(tmp_path):
+    done = _run_against(LIVE_OK, tmp_path, extra_env={"WATCHDOG_REQUIRE_LIVE": "1"})
+    out = done.stdout + done.stderr
+    assert "health ok" in out
+    assert done.returncode == 0
+
+
+def test_http_200_with_a_stopped_engine_is_unhealthy(tmp_path):
+    payload = dict(LIVE_OK, bot_running=False)
+    done = _run_against(payload, tmp_path, extra_env={"WATCHDOG_REQUIRE_LIVE": "1"})
+    out = done.stdout + done.stderr
+    assert "health FAILED" in out
+    assert "reason=bot_not_running" in out
+    assert done.returncode == 1
+
+
+def test_simulation_mode_is_unhealthy_while_live_is_required(tmp_path):
+    payload = dict(LIVE_OK, mode="simulation_commentary")
+    done = _run_against(payload, tmp_path, extra_env={"WATCHDOG_REQUIRE_LIVE": "1"})
+    out = done.stdout + done.stderr
+    assert "reason=mode_not_live" in out
+    assert "mode=simulation_commentary" in out
+    assert done.returncode == 1
+
+
+def test_simulation_mode_is_fine_outside_the_live_window(tmp_path):
+    payload = dict(LIVE_OK, mode="simulation_commentary")
+    done = _run_against(payload, tmp_path, extra_env={"WATCHDOG_REQUIRE_LIVE": "0"})
+    out = done.stdout + done.stderr
+    assert "health ok" in out
+    assert done.returncode == 0
+
+
+def test_a_500_is_unhealthy(tmp_path):
+    done = _run_against(LIVE_OK, tmp_path, code=500,
+                        extra_env={"WATCHDOG_REQUIRE_LIVE": "1"})
+    out = done.stdout + done.stderr
+    assert "health FAILED" in out and "http=500" in out
+    assert done.returncode == 1
+
+
+def test_the_live_window_defaults_to_rth_on_weekdays(tmp_path):
+    """The default must be `auto`, resolved from ET clock + weekday — not a
+    hardcoded yes/no."""
+    script = Path(SCRIPT).read_text()
+    assert 'WATCHDOG_REQUIRE_LIVE:-auto' in script
+    assert "WATCHDOG_LIVE_FROM:-0925" in script
+    assert "WATCHDOG_LIVE_TO:-1605" in script
+    assert "TZ=America/New_York date +%H%M" in script
+    assert "TZ=America/New_York date +%u" in script
+
+
+# ── fix round 1 (Minor 7): only a python process running the bot is killed ──
+
+def test_a_decoy_process_holding_the_filename_is_never_matched(tmp_path):
+    """An editor or grep with the script name in its command line must never
+    appear in the kill list."""
+    decoy = _sp.Popen(
+        ["bash", "-c",
+         'exec -a "vim trading_bot_commentary_updated.py" sleep 25'],
+    )
+    try:
+        done = _run_against(
+            dict(LIVE_OK, bot_running=False), tmp_path,
+            extra_env={"WATCHDOG_REQUIRE_LIVE": "1",
+                       "WATCHDOG_FAILS_BEFORE_RESTART": "1"},
+        )
+        out = done.stdout + done.stderr
+        assert "dry-run: would restart now" in out
+        assert str(decoy.pid) not in out
+    finally:
+        decoy.kill()
+        decoy.wait(timeout=10)
+
+
+def test_a_failed_start_or_toggle_escalates(tmp_path):
+    """Source-level: a restart that cannot bring the engine back to live must
+    say so loudly and exit non-zero (it cannot be exercised without actually
+    restarting the bot)."""
+    script = Path(SCRIPT).read_text()
+    start = script.index("post_api /api/start")
+    block = script[start:start + 1400]
+    assert "OPERATOR ACTION REQUIRED" in block
+    assert script.count("OPERATOR ACTION REQUIRED") >= 2
+    assert "2[0-9][0-9]" in block or "is_2xx" in block

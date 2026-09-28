@@ -8,6 +8,7 @@ import pandas as pd
 
 from core.config import Config
 from core.isolated_calls import run_isolated
+from core.provider_calls import log_rate_limited
 from core.models import CommentaryType
 from core.commentary import TradingCommentary
 from yf_isolated import yf_download_daily
@@ -792,9 +793,17 @@ class StockScreener:
         Returns True if symbol passes all three. Logs reason via
         self._quality_filter_rejects on any reject.
 
-        Conservative: if data is missing for a symbol, the trend +
-        relative-strength gates pass-through (don't block on missing
-        data). Only the blocklist is hard.
+        v-wedge-fix-2026-09-28 fix round 1 (Important 4): FAILS CLOSED on
+        missing data. This gate used to pass a symbol through whenever its
+        daily bars were absent — written when those bars came from an
+        in-process yfinance call that either worked or raised. They now come
+        from the isolated subprocess pool (core/isolated_calls.py), which
+        legitimately returns nothing while it is cold or just after a child
+        was killed. "No data" must NARROW the universe, not open it: a cold
+        pool that widened it would admit precisely the un-vetted names the
+        trend and relative-strength gates exist to keep out. Too little
+        history, no Close column and an unparseable frame are all the same
+        answer — we cannot vet this symbol, so it does not trade.
         """
         # Gate 1: hard blocklist
         if symbol in LEVERAGED_ETF_BLOCKLIST:
@@ -804,14 +813,15 @@ class StockScreener:
         sym_df = self._quality_data_cache.get(symbol)
         spy_df = self._quality_data_cache.get('SPY')
 
-        # If no price history, fall through (don't block).
+        # No price history → cannot vet → reject (fail closed).
         if sym_df is None or sym_df.empty:
-            return True
+            return self._quality_gate_fail_closed(symbol, "no_quality_data")
 
         try:
             closes = sym_df['Close'] if 'Close' in sym_df.columns else None
             if closes is None or len(closes) < 50:
-                return True  # not enough history; pass
+                # No SMA50 to judge against — that is missing data, not a pass.
+                return self._quality_gate_fail_closed(symbol, "short_history")
             last_close = float(closes.iloc[-1])
             sma50 = float(closes.tail(50).mean())
 
@@ -851,9 +861,33 @@ class StockScreener:
                         return False
         except Exception as exc:
             logger.debug("screener: quality eval error for %s: %s", symbol, exc)
-            return True  # don't block on eval error
+            return self._quality_gate_fail_closed(
+                symbol, f"eval_error:{type(exc).__name__}",
+            )
 
         return True
+
+    def _quality_gate_fail_closed(self, symbol: str, reason: str) -> bool:
+        """Book a fail-closed quality reject and return False.
+
+        The count goes in the same `_quality_filter_rejects` bucket the other
+        gates use; the reason is logged at WARNING but rate-limited (once per
+        minute per reason) so a cold pool produces one line, not one per
+        symbol per cycle. If these lines persist the universe is being
+        starved — check `isolated_pool_unavailable` in the same log.
+        """
+        self._quality_filter_rejects[symbol] = (
+            self._quality_filter_rejects.get(symbol, 0) + 1
+        )
+        log_rate_limited(
+            f"screener_quality_fail_closed:{reason}",
+            lambda suppressed: (
+                f"screener: quality gate FAIL-CLOSED reason={reason} "
+                f"symbol={symbol} suppressed={suppressed} "
+                f"— symbol not tradeable until its daily bars are available"
+            ),
+        )
+        return False
 
     def _passes_mover_quality_filter(self, mover: Dict[str, Any]) -> bool:
         """v-mover-quality-relax-2026-09-10: relaxed quality filter for movers.

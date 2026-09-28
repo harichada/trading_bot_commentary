@@ -31,11 +31,22 @@ class RealTimeDataProvider:
     quote, empty dict, neutral breadth.
     """
 
-    def _isolated(self, fn, *args, site: str) -> Optional[Any]:
-        """One bounded, killable yfinance call. None when it does not answer."""
+    def _isolated(
+        self, fn, *args, site: str, timeout: Optional[float] = None,
+    ) -> Optional[Any]:
+        """One bounded, killable yfinance call. None when it does not answer.
+
+        v-wedge-fix-2026-09-28 fix round 1 (Minor 8): the budget must match the
+        shape of the call. The engine's own helper allows 3 s for a quote and
+        10 s for history; an inner call with a 10 s budget under an outer 3 s
+        quote budget is decided by a timeout nobody asked for.
+        """
         return run_isolated_sync(
             fn, *args,
-            timeout=Config().PROVIDER_HISTORY_TIMEOUT_SEC,
+            timeout=(
+                Config().PROVIDER_HISTORY_TIMEOUT_SEC if timeout is None
+                else timeout
+            ),
             site=f"realtime_{site}",
         )
 
@@ -86,7 +97,10 @@ class RealTimeDataProvider:
 
             # The whole dict is assembled in the child: fast_info objects are
             # not picklable, and callers must never see a half-built quote.
-            quote = self._isolated(yf_fast_quote, symbol, site="quote")
+            quote = self._isolated(
+                yf_fast_quote, symbol, site="quote",
+                timeout=Config().QUOTE_FETCH_TIMEOUT_SEC,
+            )
             if quote is None:
                 return None
 

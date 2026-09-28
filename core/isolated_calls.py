@@ -38,10 +38,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import functools
 import multiprocessing
 import os
 import signal
 import threading
+import time
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Callable, Optional
@@ -53,10 +55,21 @@ logger = logging.getLogger("TradingBot")
 
 #: Ruling 2: two workers, no more. Each child is a full interpreter.
 POOL_WORKERS: int = 2
+#: v-wedge-fix-2026-09-28 fix round 1 (Important 2): after a probe failure the
+#: pool is torn down so the NEXT call rebuilds it — but not instantly on every
+#: call. A child that cannot even run a trivial function means a broken
+#: environment, and respawning two interpreters per call would make that worse.
+PROBE_RETRY_COOLDOWN_SEC: float = 60.0
 
 _lock = threading.Lock()
 _pool: Optional[ProcessPoolExecutor] = None
 _ready = threading.Event()
+_probe_failed = threading.Event()
+_probe_failed_at: Optional[float] = None
+#: Bumped on every pool creation. A probe callback from a superseded pool must
+#: not report unavailability or tear down its successor — the probe of a pool we
+#: killed on purpose always fails, and acting on that would kill the new pool.
+_generation: int = 0
 
 
 # ── pool ownership ────────────────────────────────────────────────────
@@ -80,11 +93,13 @@ def get_pool() -> ProcessPoolExecutor:
     Creation submits a readiness probe; `is_ready()` flips once a child has
     answered it, which is how callers tell a booted pool from a cold one.
     """
-    global _pool
+    global _pool, _generation
     with _lock:
         if _pool is None:
             import yf_isolated                      # child-safe entry points
 
+            _generation += 1
+            generation = _generation
             ctx = multiprocessing.get_context("spawn")
             _pool = ProcessPoolExecutor(
                 max_workers=POOL_WORKERS,
@@ -92,28 +107,59 @@ def get_pool() -> ProcessPoolExecutor:
                 initializer=yf_isolated.child_init,
             )
             _ready.clear()
+            _probe_failed.clear()
             logger.info(
                 "isolated_calls: spawn pool created workers=%d (booting)",
                 POOL_WORKERS,
             )
             try:
                 probe = _pool.submit(yf_isolated.probe)
-                probe.add_done_callback(_on_probe_done)
+                probe.add_done_callback(
+                    functools.partial(_on_probe_done, generation=generation)
+                )
             except Exception as exc:                # pragma: no cover
                 logger.warning("isolated_calls: probe submit failed: %s", exc)
         return _pool
 
 
-def _on_probe_done(future: Any) -> None:
+def _on_probe_done(future: Any, generation: int = 0) -> None:
+    """Probe completion handler.
+
+    v-wedge-fix-2026-09-28 fix round 1 (Important 2): a failed probe used to
+    just log at INFO and leave the pool alive-but-never-ready, which disabled
+    isolated calls for the whole session. Now it is a rate-limited WARNING and
+    the pool is torn down so the next call (after the cooldown) rebuilds it.
+    The teardown runs on its own thread because this callback can fire inline
+    inside `get_pool()` while the module lock is held.
+    """
+    global _probe_failed_at
     try:
         if future.cancelled():
             return
         exc = future.exception()
-        if exc is not None:
-            logger.warning("isolated_calls: pool probe failed: %s", exc)
-            return
     except Exception:                               # pragma: no cover
         return
+    if generation != _generation:
+        # Superseded pool (we tore it down, or it was rebuilt). Its probe's
+        # outcome says nothing about the pool that is live now.
+        return
+    if exc is not None:
+        _probe_failed_at = time.monotonic()
+        _probe_failed.set()
+        provider_calls.log_rate_limited(
+            "isolated_probe_failed",
+            lambda suppressed, exc=exc: (
+                f"isolated_pool_unavailable err={type(exc).__name__}: {exc} "
+                f"suppressed={suppressed} — pool torn down, retry in "
+                f"{PROBE_RETRY_COOLDOWN_SEC:.0f}s; yfinance callers fall back"
+            ),
+        )
+        threading.Thread(
+            target=shutdown_pool, args=("probe_failed",),
+            name="isolated-pool-teardown", daemon=True,
+        ).start()
+        return
+    _probe_failed.clear()
     _ready.set()
     logger.info("isolated_calls: spawn pool ready")
 
@@ -122,11 +168,42 @@ def is_ready() -> bool:
     return _ready.is_set()
 
 
+def probe_failed() -> bool:
+    """True when the last readiness probe raised in the child."""
+    return _probe_failed.is_set()
+
+
+def _in_probe_cooldown() -> bool:
+    if _probe_failed_at is None:
+        return False
+    return (time.monotonic() - _probe_failed_at) < PROBE_RETRY_COOLDOWN_SEC
+
+
+def _ensure_pool() -> Optional[ProcessPoolExecutor]:
+    """The pool for a real call: None while a failed probe is cooling down."""
+    if _pool is None and _in_probe_cooldown():
+        return None
+    return get_pool()
+
+
 def wait_ready(timeout: float = 120.0) -> bool:
-    """Block until a child has answered the probe. For start-up warming
-    and for tests — never call this from an event loop."""
+    """Block until a child has answered the probe, or the probe fails.
+
+    For start-up warming and for tests — never call this from an event loop.
+    Returns as soon as the probe fails rather than burning the whole timeout;
+    an explicit wait also clears the cooldown, because the caller is asking
+    for the pool now.
+    """
+    global _probe_failed_at
+    _probe_failed_at = None
     get_pool()
-    return _ready.wait(timeout)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if _ready.wait(0.1):
+            return True
+        if _probe_failed.is_set():
+            return False
+    return _ready.is_set()
 
 
 def shutdown_pool(reason: str) -> None:
@@ -164,6 +241,17 @@ def shutdown_pool(reason: str) -> None:
 # ── the helpers ───────────────────────────────────────────────────────
 
 def _log_not_ready(site: str) -> None:
+    """Booting is normal and logs at INFO; an unavailable pool (probe failed,
+    or cooling down after one) is a WARNING — see _on_probe_done."""
+    if _probe_failed.is_set() or _in_probe_cooldown():
+        provider_calls.log_rate_limited(
+            f"isolated_unavailable:{site}",
+            lambda suppressed: (
+                f"isolated_pool_unavailable site={site} suppressed={suppressed} "
+                f"— probe failed, caller falls back"
+            ),
+        )
+        return
     provider_calls.log_rate_limited(
         f"isolated_warming:{site}",
         lambda suppressed: (
@@ -207,8 +295,8 @@ async def run_isolated(
         return await provider_calls.provider_call(
             fn, *args, timeout=budget, site=f"{site}:thread", **kwargs
         )
-    pool = get_pool()
-    if not is_ready():
+    pool = _ensure_pool()
+    if pool is None or not is_ready():
         _log_not_ready(site)
         return None
     try:
@@ -244,8 +332,8 @@ def run_isolated_sync(
         return provider_calls.provider_call_sync(
             fn, *args, timeout=budget, site=f"{site}:thread", **kwargs
         )
-    pool = get_pool()
-    if not is_ready():
+    pool = _ensure_pool()
+    if pool is None or not is_ready():
         _log_not_ready(site)
         return None
     try:

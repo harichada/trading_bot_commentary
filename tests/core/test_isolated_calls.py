@@ -40,16 +40,29 @@ def _child_double(value: int) -> int:
 
 @pytest.fixture(autouse=True)
 def _teardown_pool():
+    from core import provider_calls
+
     isolated_calls.shutdown_pool("test_setup")
+    provider_calls.reset_state()          # deterministic rate-limiter state
     yield
     isolated_calls.shutdown_pool("test_teardown")
+    provider_calls.reset_state()
 
 
 @pytest.fixture
 def ready_pool():
     """Bring the pool up (spawn boots a fresh interpreter — slow) so the
-    tests below measure call behaviour, not child start-up."""
-    assert isolated_calls.wait_ready(timeout=180.0), "isolated pool never became ready"
+    tests below measure call behaviour, not child start-up.
+
+    One retry: spawning two interpreters can genuinely fail on a loaded box
+    (observed once in a full-suite run), and the production path tolerates that
+    by rebuilding. A second consecutive failure is a real defect.
+    """
+    if not isolated_calls.wait_ready(timeout=180.0):
+        isolated_calls.shutdown_pool("fixture_retry")
+        assert isolated_calls.wait_ready(timeout=180.0), (
+            "isolated pool never became ready (two attempts)"
+        )
     return isolated_calls.get_pool()
 
 
@@ -160,3 +173,58 @@ def _module_imports(path: str) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             mods.add(node.module)
     return mods
+
+
+# ── fix round 1 (Important 2): a failed probe must not disable the pool ──
+
+def _probe_boom() -> str:
+    raise RuntimeError("probe failed in child")
+
+
+def test_probe_failure_warns_and_tears_the_pool_down(monkeypatch, caplog):
+    """Before the fix a failed probe left the pool alive-but-never-ready, so
+    every call for the rest of the session returned None at INFO. Now the
+    failure is a rate-limited WARNING and the pool is torn down."""
+    import logging
+
+    import yf_isolated
+
+    monkeypatch.setattr(yf_isolated, "probe", _probe_boom)
+    with caplog.at_level(logging.WARNING, logger="TradingBot"):
+        assert isolated_calls.wait_ready(timeout=120.0) is False
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and isolated_calls.get_pool_if_created() is not None:
+            time.sleep(0.2)
+    assert isolated_calls.get_pool_if_created() is None, "pool was not torn down"
+    assert any(
+        "isolated_pool_unavailable" in r.getMessage() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_a_call_during_the_probe_cooldown_does_not_respawn_the_pool(monkeypatch):
+    import yf_isolated
+
+    monkeypatch.setattr(yf_isolated, "probe", _probe_boom)
+    monkeypatch.setattr(isolated_calls, "PROBE_RETRY_COOLDOWN_SEC", 600.0)
+    assert isolated_calls.wait_ready(timeout=120.0) is False
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and isolated_calls.get_pool_if_created() is not None:
+        time.sleep(0.2)
+    out = asyncio.run(
+        isolated_calls.run_isolated(_child_double, 2, timeout=5.0, site="cooldown")
+    )
+    assert out is None
+    assert isolated_calls.get_pool_if_created() is None
+
+
+def test_the_pool_is_rebuilt_once_the_probe_works_again(monkeypatch):
+    import yf_isolated
+
+    monkeypatch.setattr(yf_isolated, "probe", _probe_boom)
+    monkeypatch.setattr(isolated_calls, "PROBE_RETRY_COOLDOWN_SEC", 0.0)
+    assert isolated_calls.wait_ready(timeout=120.0) is False
+    monkeypatch.undo()
+    assert isolated_calls.wait_ready(timeout=180.0) is True
+    assert asyncio.run(
+        isolated_calls.run_isolated(_child_double, 21, timeout=30.0, site="rebuilt")
+    ) == 42

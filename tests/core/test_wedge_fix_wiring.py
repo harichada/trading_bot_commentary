@@ -234,3 +234,159 @@ def test_watchdog_never_prints_the_api_key():
             "> \"$HEADER_FILE\"" in code
         ), f"scripts/bot_watchdog.sh:{lineno} may leak the key"
     assert '-H "@$HEADER_FILE"' in WATCHDOG
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Fix round 1
+# ══════════════════════════════════════════════════════════════════════
+
+MARKET_CONTEXT_PATH = Path("core/market_context.py")
+MARKET_CONTEXT = MARKET_CONTEXT_PATH.read_text()
+
+#: Modules that receive a provider object and still call it synchronously
+#: without a bound. Reviewed 2026-09-28 (fix round 1): none of them is on the
+#: engine's position/order path, and they are outside this round's file list —
+#: `api/routes.py` blocks the FastAPI loop (the `/api/status` silence itself),
+#: `core/loops/desk_steps.py` and `analysis/active_open_desk.py` block their
+#: own supervised loops, `data_providers/file_bars.py` is a bars wrapper used
+#: off the trading path. This list must SHRINK, never grow: a new entry means
+#: someone reintroduced an unbounded provider call.
+KNOWN_UNBOUNDED_PROVIDER_CALLERS = {
+    "api/routes.py",
+    "core/loops/desk_steps.py",
+    "analysis/active_open_desk.py",
+    "data_providers/file_bars.py",
+}
+
+PROVIDER_CALL_RE = re.compile(
+    r"\b\w*provider\.get_(?:quote|quotes|market_data)\s*\("
+)
+
+#: The helper modules describe these calls in their prose (that is their whole
+#: subject) and never hold a provider object themselves.
+SCAN_SKIP = {"core/provider_calls.py", "core/isolated_calls.py"}
+
+
+def _provider_call_sites(path: Path) -> list[int]:
+    return [
+        lineno for lineno, code in _code_lines(path.read_text())
+        if PROVIDER_CALL_RE.search(code)
+    ]
+
+
+# ── Important 1: the strategy alias is bounded ────────────────────────
+
+def test_no_bare_provider_call_remains_in_market_context():
+    """`schwab_provider` is `engine.data_provider` under another name: these
+    calls run on the engine loop via strategies' generate_signal_with_commentary."""
+    assert _provider_call_sites(MARKET_CONTEXT_PATH) == []
+
+
+def test_market_context_routes_every_provider_call_through_the_helper():
+    assert "from core import provider_calls" in MARKET_CONTEXT
+    # Five call sites: day change, SPY quote, SPY VWAP bars, symbol RTH open,
+    # in-move bars.
+    assert MARKET_CONTEXT.count("provider_calls.provider_call_sync(") == 5
+    for site in (
+        "market_context_day_change", "market_context_spy_quote",
+        "market_context_spy_vwap_bars", "market_context_symbol_rth_open",
+        "market_context_inmove_bars",
+    ):
+        assert f'site="{site}"' in MARKET_CONTEXT, site
+    # Bar fetches get the history budget, quotes the quote budget.
+    assert MARKET_CONTEXT.count("timeout=provider_calls.history_timeout()") == 2
+
+
+def test_the_provider_alias_scan_covers_the_whole_tree():
+    """Every module that receives a provider object is scanned, not just the
+    ones the engine owns. The allowlist is the outstanding work."""
+    offenders = set()
+    scanned = 0
+    for folder in ("core", "api", "strategies", "analysis", "data_providers"):
+        for path in sorted(Path(folder).rglob("*.py")):
+            rel = path.as_posix()
+            if rel in SCAN_SKIP:
+                continue
+            scanned += 1
+            if _provider_call_sites(path):
+                offenders.add(rel)
+    assert scanned > 50, f"the scan found only {scanned} modules — glob broke"
+    assert offenders == KNOWN_UNBOUNDED_PROVIDER_CALLERS, (
+        f"unexpected unbounded provider callers: "
+        f"{offenders - KNOWN_UNBOUNDED_PROVIDER_CALLERS}; "
+        f"fixed (remove from the list): "
+        f"{KNOWN_UNBOUNDED_PROVIDER_CALLERS - offenders}"
+    )
+
+
+# ── Important 2: a failed probe rebuilds, loudly ──────────────────────
+
+def test_probe_failure_tears_down_and_warns():
+    source = Path("core/isolated_calls.py").read_text()
+    assert "PROBE_RETRY_COOLDOWN_SEC" in source
+    idx = source.index("if exc is not None:")
+    block = source[idx:idx + 900]
+    assert "isolated_pool_unavailable" in block
+    assert 'shutdown_pool, args=("probe_failed",)' in block
+    # A superseded pool's probe must not tear down its successor.
+    assert "if generation != _generation:" in source
+
+
+# ── Important 3: the watchdog reads the engine's state ────────────────
+
+def test_watchdog_parses_bot_running_and_mode():
+    assert '"bot_running"[[:space:]]*:[[:space:]]*true' in WATCHDOG
+    assert "bot_not_running" in WATCHDOG
+    assert "mode_not_live" in WATCHDOG
+    assert "require_live_now" in WATCHDOG
+
+
+# ── Important 4: the screener fails closed ────────────────────────────
+
+def test_screener_quality_gate_fails_closed():
+    assert "def _quality_gate_fail_closed(" in SCREENER
+    assert SCREENER.count("_quality_gate_fail_closed(") == 4   # def + 3 sites
+    assert "no_quality_data" in SCREENER and "short_history" in SCREENER
+    assert "return True  # not enough history; pass" not in SCREENER
+
+
+# ── Minor 5: the live OCO validator awaits its quote ──────────────────
+
+def test_the_effective_oco_validator_is_async_and_awaited():
+    definitions = [
+        m.start() for m in re.finditer(r"def _validate_oco_prices\(", ENGINE)
+    ]
+    assert len(definitions) == 2, "the duplicate is expected; see the DEAD CODE note"
+    effective = definitions[-1]
+    assert ENGINE[effective - 6:effective] == "async ", "the LAST definition wins"
+    block = ENGINE[effective:effective + 700]
+    assert "await self._provider_call(" in block
+    assert ENGINE.count("await self._validate_oco_prices(") == 2
+    assert "if not self._validate_oco_prices(" not in ENGINE
+    # The shadowed copy is labelled so nobody edits the wrong one.
+    assert "DEAD CODE" in ENGINE[max(0, definitions[0] - 500):definitions[0]]
+
+
+def test_the_news_veto_lookup_keeps_the_blocking_helper_with_a_reason():
+    idx = ENGINE.index('site="news_veto_price"')
+    block = ENGINE[max(0, idx - 700):idx]
+    assert "_provider_call_sync(" in block
+    assert "bounded" in block
+
+
+# ── Minor 6: heartbeat forgets stopped loops, waits out start-up ──────
+
+def test_heartbeat_forgets_and_has_a_startup_grace():
+    source = Path("core/loop_heartbeat.py").read_text()
+    assert "DEFAULT_STARTUP_GRACE_SEC: float = 30.0" in source
+    assert "def forget(self, name: str)" in source
+    idx = source.index("async def run(")
+    assert "finally:" in source[idx:idx + 1400]
+    assert "self.forget(name)" in source[idx:idx + 1400]
+
+
+# ── Minor 8: nested budgets ───────────────────────────────────────────
+
+def test_realtime_quote_uses_the_quote_budget():
+    idx = REALTIME.index("yf_fast_quote, symbol")
+    assert "Config().QUOTE_FETCH_TIMEOUT_SEC" in REALTIME[idx:idx + 200]

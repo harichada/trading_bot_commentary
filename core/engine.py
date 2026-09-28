@@ -1335,7 +1335,7 @@ class TradingEngineWithCommentary:
             # Validate OCO prices first
             # Check if this is a short position (SELL signal without existing position)
             is_short = signal.signal_type == SignalType.SELL and signal.symbol not in self.positions
-            if not self._validate_oco_prices(signal.symbol, signal.stop_loss, signal.take_profit, is_short):
+            if not await self._validate_oco_prices(signal.symbol, signal.stop_loss, signal.take_profit, is_short):
                 return False
             
             # Check buying power
@@ -2032,6 +2032,11 @@ class TradingEngineWithCommentary:
             'details': response.text if hasattr(response, 'text') else None
         }
 
+    # DEAD CODE: this definition is shadowed by the identical one further down
+    # the class body (the later `def` of the same name wins). Kept as-is —
+    # deleting ~180 lines of live-looking order validation is not a change to
+    # make inside a live-safety fix. The EFFECTIVE definition is the async one
+    # below. v-wedge-fix-2026-09-28 fix round 1 (Minor 5).
     def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
@@ -2216,13 +2221,19 @@ class TradingEngineWithCommentary:
                 importance=7
             ))
             return None
-    def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
+
+    # v-wedge-fix-2026-09-28 fix round 1 (Minor 5): this is the EFFECTIVE
+    # definition (it shadows the earlier one) and it sits on the order path, so
+    # its quote is AWAITED rather than fetched with a blocking bounded call —
+    # the loop keeps serving while the broker answers. Both callers are
+    # coroutines and await it.
+    async def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
             # Get current quote
             # v-wedge-fix-2026-09-28: bounded; a timeout keeps today's
             # "no quote -> skip validation" behaviour.
-            quote = self._provider_call_sync(
+            quote = await self._provider_call(
                 self.data_provider.get_quote, symbol, site="validate_oco_prices",
             )
             if not quote:
@@ -8417,8 +8428,8 @@ class TradingEngineWithCommentary:
             # sim decisions match live 1:1.
             is_short_sim = (signal.signal_type == SignalType.SELL
                             and signal.symbol not in self.simulated_positions)
-            if not self._validate_oco_prices(signal.symbol, signal.stop_loss,
-                                              signal.take_profit, is_short_sim):
+            if not await self._validate_oco_prices(signal.symbol, signal.stop_loss,
+                                                    signal.take_profit, is_short_sim):
                 self._audit("signal_router", signal.symbol, "reject_oco_invalid_sim",
                             signal.reasoning.get("strategy", "unknown"),
                             side=signal.signal_type.name,
