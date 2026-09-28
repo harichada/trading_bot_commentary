@@ -243,8 +243,8 @@ def test_fit_lane_files_stay_inside_the_line_budget():
         assert len(pathlib.Path(path).read_text().splitlines()) < 400, path
 
 
-# Task 2 review, Important 1: with two admitted sides the first entry keeps the seat unless a later
-# one has a strictly better score; an unmeasured (row=None) side must not be displaced by a worse row.
+# Task 2 review, Important 1: an admitted-but-unmeasured side (row=None) scores neutral, so a side with
+# negative evidence never displaces it and the pick does not depend on entry order; positive evidence wins.
 def test_best_of_is_not_order_dependent_when_an_admitted_side_has_no_row():
     from types import SimpleNamespace
     import pandas as pd
@@ -254,8 +254,9 @@ def test_best_of_is_not_order_dependent_when_an_admitted_side_has_no_row():
     ts = pd.Timestamp("2026-01-05 09:35")
     long_e = Entry("AAA", "long", ts, 100.0, 97.0, 106.0, 5, "multiday", "t")
     short_e = Entry("AAA", "short", ts, 100.0, 103.0, 94.0, 5, "multiday", "t")
-    bad = SimpleNamespace(score=-5.0)
-    best_entry, best_row = FitLaneStrategy._best_of([long_e, short_e], {"long": None, "short": bad})
-    assert best_entry is long_e and best_row is None
-    best_entry, best_row = FitLaneStrategy._best_of([short_e, long_e], {"long": None, "short": bad})
-    assert best_entry is short_e and best_row is bad
+    bad, good = SimpleNamespace(score=-5.0), SimpleNamespace(score=0.5)
+    for order in ([long_e, short_e], [short_e, long_e]):
+        best_entry, best_row = FitLaneStrategy._best_of(order, {"long": None, "short": bad})
+        assert best_entry is long_e and best_row is None
+        best_entry, best_row = FitLaneStrategy._best_of(order, {"long": None, "short": good})
+        assert best_entry is short_e and best_row is good
