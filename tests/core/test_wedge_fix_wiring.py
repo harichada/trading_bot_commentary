@@ -500,7 +500,7 @@ def test_the_entry_and_close_paths_have_their_own_timeout_audits():
     assert "NOT retrying" in ENGINE[entry:entry + 900]
     # The close path leaves the position for the next cycle.
     assert 'self._audit("position_manager"' in ENGINE[max(0, close - 300):close + 300]
-    assert "bracket is still" in ENGINE[close:close + 1200]
+    assert "NO broker-side protection" in ENGINE[close:close + 1400]   # honest zombie_pending message
 
 
 def test_the_broker_helper_raises_and_says_why():

@@ -48,6 +48,9 @@ class HangingClient:
 def _tight(monkeypatch):
     provider_calls.reset_state()
     monkeypatch.setattr(provider_calls, "broker_timeout", lambda: 0.2)
+    # the screener passes the quote budget explicitly (3 s live); tighten it too
+    from core import config as _cfg
+    monkeypatch.setattr(_cfg.Config, "QUOTE_FETCH_TIMEOUT_SEC", property(lambda self: 0.2))
     yield
     provider_calls.reset_state()
 
