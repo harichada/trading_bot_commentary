@@ -7,6 +7,11 @@ written so the caller can skip the whole step on `allocation <= 0`.
 
 The pure rules, all total (they never raise, whatever comes in):
 
+  0. `effective_value` — **the** cap: a raw balance as the bot may use it. Read
+     at every consumption point (see `RiskManagerWithCommentary
+     .effective_balance` / `.effective_buying_power`) so that the live sites
+     which overwrite the raw attributes with whole-account Schwab numbers
+     cannot defeat it.
   1. `capped_balance_pair` — one balance under the cap: the capped value the
      risk manager uses, the raw Schwab value kept for logging, and whether the
      input was unusable (in which case both previous values survive).
@@ -82,6 +87,35 @@ def coerce_allocation(raw: Any) -> float:
     if value is None or value <= ALLOCATION_OFF:
         return ALLOCATION_OFF
     return value
+
+
+def effective_value(raw: Any, allocation: float) -> Any:
+    """A raw balance as the bot is allowed to *use* it — the read-time cap.
+
+    v-go-live-5k-r1-2026-09-28 (review round 0, critical 1): capping inside
+    `sync_with_schwab_data` was not enough. Three live sites overwrite
+    `risk_manager.buying_power` / `.account_balance` with whole-account Schwab
+    numbers right after a sync — the engine's router before sizing,
+    `_check_buying_power`, and the dashboard's `/ws` position-cache refresh
+    every 45s — which restored an $18,600 per-position cap and a -$1,395 daily
+    stop. So the clamp moved to the read: the plain attributes stay as write
+    targets and every *consumer* goes through here, which no write site can
+    defeat.
+
+    With the allocation off this returns `raw` **itself**, untouched — not a
+    coerced float. That is what keeps the off path byte-identical, including
+    for values that would raise downstream today (a `None` buying power still
+    raises the same TypeError at the same comparison it always did).
+
+    With the allocation on, an unusable raw value yields 0.0: under a cap,
+    "I cannot read the balance" must mean "no capital", never "all of it".
+    """
+    if allocation <= ALLOCATION_OFF:
+        return raw
+    value = finite_float(raw)
+    if value is None:
+        return 0.0
+    return min(value, allocation)
 
 
 def clamp_previous(prev: Any, allocation: float) -> float:

@@ -1258,8 +1258,11 @@ class TradingEngineWithCommentary:
             required = signal.position_size * price
             
             # Check available funds
-            if self.risk_manager.buying_power < required:
-                raise InsufficientFundsException(required, self.risk_manager.buying_power)
+            # v-go-live-5k-r1-2026-09-28: effective_* so the allocation cap
+            # survives every raw write site (router, _check_buying_power, /ws).
+            _eff_bp = self.risk_manager.effective_buying_power()
+            if _eff_bp < required:
+                raise InsufficientFundsException(required, _eff_bp)
                                     
             from schwab.orders.equities import (equity_buy_market, equity_sell_market, 
                                                 equity_sell_short_market, equity_buy_limit, 
@@ -1511,7 +1514,7 @@ class TradingEngineWithCommentary:
                         confidence=signal.confidence,
                         stop_loss=signal.stop_loss,
                         take_profit=signal.take_profit,
-                        account_balance=self.risk_manager.account_balance,
+                        account_balance=self.risk_manager.effective_balance(),
                         mode=self.mode.value,
                         order_id=order_id
                     )
@@ -5042,7 +5045,7 @@ class TradingEngineWithCommentary:
             message="Beginning market analysis. I'll explain each step of my decision-making process.",
             data={
                 'mode': self.mode.value,
-                'account_balance': self.risk_manager.account_balance,
+                'account_balance': self.risk_manager.effective_balance(),
                 'risk_per_trade': f"{risk_per_trade:.1%}"
             },
             importance=9
@@ -5272,13 +5275,26 @@ class TradingEngineWithCommentary:
                             # how much of BOT_CAPITAL_ALLOCATION is deployed.
                             # Inert unless the allocation flag is on; the risk
                             # manager only reads it then.
+                            #
+                            # fix round 1, minor 3: this block runs on the
+                            # every-5th-analysis Schwab sync, so the figure can
+                            # be 1-5 cycles stale. Entries inside one window
+                            # each see the same (lower) open notional and can
+                            # collectively overshoot the allocation by up to one
+                            # window of fills. Total exposure is still bounded
+                            # by MAX_POSITIONS x the per-position cap
+                            # (min(MAX_POSITION_VALUE, allocation x
+                            # MAX_POSITION_VALUE_BP_PCT)), which is the real
+                            # ceiling between refreshes; the headroom check is
+                            # the portfolio-level backstop, not a tick-accurate
+                            # ledger.
                             self.risk_manager.bot_open_notional = self._compute_bot_open_notional()
                             logger.info(
                                 "Bot-only P&L Check: $%.2f (Schwab P&L: $%.2f, "
                                 "Limit: $%.2f)",
                                 self.risk_manager.bot_daily_pnl,
                                 schwab_pnl,
-                                self.risk_manager.account_balance * 0.05,
+                                self.risk_manager.effective_balance() * 0.05,
                             )
                         except Exception as _bp_exc:
                             logger.warning(
@@ -5286,7 +5302,7 @@ class TradingEngineWithCommentary:
                                 "circuit will use stale bot P&L",
                                 _bp_exc,
                             )
-                        logger.info(f"Schwab P&L Check: ${schwab_pnl:.2f} (Limit: ${self.risk_manager.account_balance * 0.05:.2f})")
+                        logger.info(f"Schwab P&L Check: ${schwab_pnl:.2f} (Limit: ${self.risk_manager.effective_balance() * 0.05:.2f})")
                 
                 # v-emergency-stop-bot-only-2026-06-17: this emergency
                 # stop used to trip on ACCOUNT-WIDE schwab_pnl, which
@@ -5306,7 +5322,10 @@ class TradingEngineWithCommentary:
                 else:
                     _emrg_pnl = schwab_pnl
                 # Only check emergency stop with the circuit-selected P&L
-                if _emrg_pnl < 0 and abs(_emrg_pnl) > self.risk_manager.account_balance * 0.05:
+                # v-go-live-5k-r1-2026-09-28: the emergency stop is a risk
+                # decision, so it reads the effective (allocation-capped)
+                # equity — 5% of $5,000 is $250, not 5% of the whole account.
+                if _emrg_pnl < 0 and abs(_emrg_pnl) > self.risk_manager.effective_balance() * 0.05:
                     # Double-check before halting. Under the bot-only
                     # circuit, recompute bot P&L from local state (it's
                     # the authoritative, network-free value) — do NOT
@@ -5320,7 +5339,7 @@ class TradingEngineWithCommentary:
                             self.risk_manager.bot_daily_pnl = _recheck
                         except Exception:
                             _recheck = _emrg_pnl
-                        if _recheck >= 0 or abs(_recheck) <= self.risk_manager.account_balance * 0.05:
+                        if _recheck >= 0 or abs(_recheck) <= self.risk_manager.effective_balance() * 0.05:
                             logger.warning(
                                 "Emergency stop ABORTED - bot-only P&L "
                                 "recheck within limit: $%.2f", _recheck)
@@ -5356,7 +5375,7 @@ class TradingEngineWithCommentary:
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP (Manual Mode)",
-                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
+                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.effective_balance() * 0.05:.2f}). "
                                    f"Manual close only is ON - YOU must close positions manually!",
                             importance=10
                         ))
@@ -5375,7 +5394,7 @@ class TradingEngineWithCommentary:
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP",
-                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
+                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.effective_balance() * 0.05:.2f}). Closing all positions.",
                             importance=10
                         ))
                         
@@ -5433,7 +5452,7 @@ class TradingEngineWithCommentary:
                     total_unrealized += sum(getattr(p, 'unrealized_pnl', 0) for p in self.simulated_positions.values())
 
                     log_performance(
-                        account_balance=self.risk_manager.account_balance,
+                        account_balance=self.risk_manager.effective_balance(),
                         daily_pnl=self.risk_manager.schwab_daily_pnl if hasattr(self.risk_manager, 'schwab_daily_pnl') else 0,
                         total_pnl=total_unrealized,
                         win_rate=self.performance_analyzer.get_win_rate() if hasattr(self, 'performance_analyzer') else 0,
@@ -5441,7 +5460,7 @@ class TradingEngineWithCommentary:
                         open_positions=positions_count,
                         mode=self.mode.value,
                         unrealized_pnl=total_unrealized,
-                        buying_power=self.risk_manager.buying_power
+                        buying_power=self.risk_manager.effective_buying_power()
                     )
 
                     # Also save ML model periodically to preserve buffer
@@ -5735,7 +5754,7 @@ class TradingEngineWithCommentary:
                             "But in commentary mode, I'll continue analyzing to show you my thought process.",
                     data={
                         'margin_call': True,
-                        'buying_power': self.risk_manager.buying_power
+                        'buying_power': self.risk_manager.effective_buying_power()
                     },
                     importance=10
                 ))
@@ -5786,7 +5805,7 @@ class TradingEngineWithCommentary:
                 data={
                     'daily_pnl': self.risk_manager.schwab_daily_pnl,  # Use Schwab P&L
                     'consecutive_losses': self.risk_manager.consecutive_losses,
-                    'buying_power': self.risk_manager.buying_power
+                    'buying_power': self.risk_manager.effective_buying_power()
                 },
                 importance=8
             ))
@@ -7811,7 +7830,9 @@ class TradingEngineWithCommentary:
                 ))
                 return
 
-            _equity = float(self.risk_manager.account_balance or 0)
+            # v-go-live-5k-r1-2026-09-28: budget gates measure notional
+            # against the capital the bot may actually use.
+            _equity = float(self.risk_manager.effective_balance() or 0)
             if _equity > 0 and _max_meanrev_risk_pct > 0:
                 _meanrev_risk_pct = _meanrev_notional / _equity
                 if _meanrev_risk_pct >= _max_meanrev_risk_pct and not _already_in_meanrev:
@@ -10071,6 +10092,13 @@ class TradingEngineWithCommentary:
                         continue
                     qty = abs(float(getattr(position, 'quantity', 0) or 0))
                     price = float(getattr(position, 'current_price', 0) or 0)
+                    # v-go-live-5k-r1-2026-09-28 (review round 0, important 2):
+                    # NaN/inf must be skipped, not summed. One NaN made the
+                    # whole total NaN, which `allocation_headroom` reads as
+                    # "fully deployed" — every entry then refused as
+                    # allocation_exhausted.
+                    if not np.isfinite(qty) or not np.isfinite(price):
+                        continue
                     if qty <= 0 or price <= 0:
                         continue
                     notional += qty * price

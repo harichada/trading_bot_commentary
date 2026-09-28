@@ -27,7 +27,7 @@ import pytest
 
 from risk.allocation import (ALLOCATION_EXHAUSTED, allocation_capped_shares,
                              allocation_headroom, capped_balance_pair,
-                             coerce_allocation, finite_float)
+                             coerce_allocation, effective_value, finite_float)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -147,7 +147,8 @@ class FakeConfig:
         self.ENABLE_PLAYBOOK_GATE = False
         self.ENABLE_MARKET_CONTEXT_SIZING = False
         self.LIVE_SIZE_MULTIPLIER = 1.0
-        self.MAX_POSITION_VALUE = 25000
+        # fix round 1, minor 5: match Config().yaml (trading.max_position_value).
+        self.MAX_POSITION_VALUE = 10000
         self.MAX_POSITION_VALUE_BP_PCT = 0.20
         self.MIN_POSITION_SIZE = 1
         self.ENABLE_BOT_ONLY_PNL_CIRCUIT = True
@@ -440,3 +441,206 @@ def test_the_daily_loss_limit_on_a_5k_allocation_is_150(monkeypatch, real_config
     monkeypatch.setenv('BOT_CAPITAL_ALLOCATION', '5000')
     limit = real_config.MAX_DAILY_LOSS * real_config.BOT_CAPITAL_ALLOCATION
     assert math.isclose(limit, 150.0)
+
+
+# ════════════════════════════════════════════════════════════════════
+# fix round 1 — the cap is applied at READ time
+#
+# Round 0 applied the cap only inside `sync_with_schwab_data`, and three live
+# sites overwrite the raw attributes with whole-account Schwab numbers right
+# afterwards (`core/engine.py` router before sizing, `_check_buying_power`, and
+# the `/ws` position-cache refresh every 45s). Measured effect: an $18,600
+# per-position cap and a -$1,395 daily stop instead of $1,000 / -$150.
+#
+# `effective_balance()` / `effective_buying_power()` are now the only things
+# any consumer reads; the plain attributes stay as write targets, so a write
+# site cannot defeat the cap.
+# ════════════════════════════════════════════════════════════════════
+
+def test_effective_value_is_the_raw_object_when_the_allocation_is_off():
+    """Off must be byte-identical — including for values that would raise
+    downstream today (a `None` buying power still raises the same TypeError)."""
+    assert effective_value(46500.0, 0.0) == 46500.0
+    assert effective_value(None, 0.0) is None
+    assert effective_value("odd", 0.0) == "odd"
+    nan = float('nan')
+    assert effective_value(nan, 0.0) is nan
+
+
+def test_effective_value_caps_when_the_allocation_is_on():
+    assert effective_value(46500.0, 5000.0) == 5000.0
+    assert effective_value(1200.0, 5000.0) == 1200.0
+    assert effective_value(5000.0, 5000.0) == 5000.0
+
+
+def test_effective_value_fails_closed_on_odd_input_under_a_cap():
+    """Under a cap an unusable balance means "no capital", not "all of it"."""
+    for bad in (None, float('nan'), float('inf'), 'abc', [], True):
+        assert effective_value(bad, 5000.0) == 0.0
+
+
+def test_effective_readers_track_the_flag(cfg):
+    mgr = make_manager()
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    assert mgr.effective_balance() == 46500.0
+    assert mgr.effective_buying_power() == 93000.0
+
+    cfg.BOT_CAPITAL_ALLOCATION = 5000.0
+    assert mgr.effective_balance() == 5000.0
+    assert mgr.effective_buying_power() == 5000.0
+
+
+def overwrite_with_raw_schwab(mgr):
+    """What all three live write sites do: raw whole-account numbers, straight
+    onto the attributes, after the capped sync has run."""
+    mgr.buying_power = SCHWAB['buying_power']
+    mgr.account_balance = SCHWAB['balance']
+
+
+def test_a_write_site_cannot_defeat_the_sizing_cap(cfg):
+    """$100 stock, 3% stop, $5,000 allocation → 10 shares, even after the
+    router / _check_buying_power / dashboard refresh clobber the attributes."""
+    cfg.BOT_CAPITAL_ALLOCATION = 5000.0
+    mgr = make_manager()
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    overwrite_with_raw_schwab(mgr)
+    assert size(mgr, make_signal(), 100.0) == 10
+
+
+def test_a_write_site_cannot_defeat_the_daily_loss_stop(cfg):
+    """3% of the $5,000 allocation is -$150, not 3% of the $46.5k account."""
+    cfg.BOT_CAPITAL_ALLOCATION = 5000.0
+    mgr = make_manager()
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    overwrite_with_raw_schwab(mgr)
+
+    mgr.bot_daily_pnl = -149.0
+    assert mgr.check_trading_allowed()[0]
+
+    mgr.bot_daily_pnl = -150.0
+    allowed, reason = mgr.check_trading_allowed()
+    assert not allowed and 'Bot daily loss' in reason
+
+
+def test_a_write_site_cannot_defeat_the_notional_headroom(cfg):
+    cfg.BOT_CAPITAL_ALLOCATION = 5000.0
+    commentary = FakeCommentary()
+    mgr = make_manager(commentary)
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    overwrite_with_raw_schwab(mgr)
+    mgr.bot_open_notional = 4950.0
+    assert size(mgr, make_signal(), 100.0) == 0
+    assert ALLOCATION_EXHAUSTED in commentary.reasons()
+
+
+def test_the_raw_attributes_are_still_the_write_targets(cfg):
+    """Write sites keep working — they just no longer decide anything."""
+    cfg.BOT_CAPITAL_ALLOCATION = 5000.0
+    mgr = make_manager()
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    overwrite_with_raw_schwab(mgr)
+    assert mgr.buying_power == 93000.0
+    assert mgr.account_balance == 46500.0
+
+
+def test_read_time_clamping_is_inert_with_the_flag_off(cfg):
+    """The regression pin for round 1: with the flag off, a raw overwrite is
+    honoured exactly as it is today (bigger account → bigger position)."""
+    mgr = make_manager()
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    overwrite_with_raw_schwab(mgr)
+    # abs cap $10,000 vs bp_cap 20% x $93,000 = $18,600 → $10,000 binds.
+    assert size(mgr, make_signal(), 100.0) == 100
+    mgr.bot_daily_pnl = -1000.0
+    assert mgr.check_trading_allowed()[0]      # -$1,395 is the off-flag limit
+
+
+def test_the_insufficient_buying_power_gate_uses_the_effective_value(cfg):
+    """A $50 allocation leaves the bot under the $100 floor even though the
+    account has $93k of buying power."""
+    cfg.BOT_CAPITAL_ALLOCATION = 50.0
+    mgr = make_manager()
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    overwrite_with_raw_schwab(mgr)
+    allowed, reason = mgr.check_trading_allowed()
+    assert not allowed and 'Insufficient buying power' in reason
+
+
+# ── fix round 1, minor 4: the min-size path is not bypassed ──────────
+
+def test_min_position_size_still_applies_when_the_allocation_did_not_bind(cfg):
+    """The allocation step must only short-circuit when it actually reduced the
+    size — otherwise a size of 0 reaching it would skip `Position Too Small`."""
+    cfg.BOT_CAPITAL_ALLOCATION = 5000.0
+    cfg.MIN_POSITION_SIZE = 50                 # far above the 10 shares sized
+    commentary = FakeCommentary()
+    mgr = make_manager(commentary)
+    mgr.sync_with_schwab_data(dict(SCHWAB))
+    assert size(mgr, make_signal(), 100.0) == 0
+    titles = [getattr(c, 'title', '') for c in commentary.entries]
+    assert any('Position Too Small' in t for t in titles)
+    assert ALLOCATION_EXHAUSTED not in commentary.reasons()
+
+
+# ════════════════════════════════════════════════════════════════════
+# fix round 1, important 2 — `_compute_bot_open_notional` must be NaN-safe
+#
+# A NaN quantity or price made the whole sum NaN, which `allocation_headroom`
+# reads as "fully deployed" → every entry refused as allocation_exhausted.
+# The engine is not constructible in tests, so the method is called unbound
+# against a stub `self`.
+# ════════════════════════════════════════════════════════════════════
+
+def open_notional(positions):
+    from core.engine import TradingEngineWithCommentary
+    stub = SimpleNamespace(positions=positions)
+    return TradingEngineWithCommentary._compute_bot_open_notional(stub)
+
+
+def bot_position(quantity=10, price=100.0, **flags):
+    return SimpleNamespace(quantity=quantity, current_price=price,
+                           managed_by_bot=flags.pop('managed_by_bot', True),
+                           is_external=flags.pop('is_external', False),
+                           is_manually_managed=flags.pop('is_manually_managed', False),
+                           is_long_term=flags.pop('is_long_term', False))
+
+
+def test_open_notional_sums_bot_managed_market_value():
+    assert open_notional({'AAPL': bot_position(10, 100.0),
+                          'MSFT': bot_position(5, 200.0)}) == 2000.0
+
+
+def test_open_notional_counts_a_short_as_deployed_capital():
+    assert open_notional({'AAPL': bot_position(-10, 100.0)}) == 1000.0
+
+
+def test_open_notional_is_nan_safe():
+    """The bug: one NaN made the whole sum NaN, so headroom went to 0 and every
+    entry was refused."""
+    for bad in (float('nan'), float('inf'), float('-inf')):
+        assert open_notional({'AAPL': bot_position(10, bad)}) == 0.0
+        assert open_notional({'AAPL': bot_position(bad, 100.0)}) == 0.0
+        mixed = open_notional({'AAPL': bot_position(10, bad),
+                               'MSFT': bot_position(5, 200.0)})
+        assert mixed == 1000.0, bad
+
+
+def test_open_notional_skips_positions_the_bot_does_not_manage():
+    assert open_notional({'AAPL': bot_position(managed_by_bot=False)}) == 0.0
+    assert open_notional({'AAPL': bot_position(is_external=True)}) == 0.0
+    assert open_notional({'AAPL': bot_position(is_manually_managed=True)}) == 0.0
+    assert open_notional({'AAPL': bot_position(is_long_term=True)}) == 0.0
+
+
+def test_open_notional_skips_the_hands_off_denylist():
+    from core.config import Config as RealConfig
+    denylist = RealConfig().HANDS_OFF_DENYLIST
+    assert denylist, "expected a non-empty hands-off denylist to test against"
+    symbol = sorted(denylist)[0]
+    assert open_notional({symbol: bot_position(10, 100.0)}) == 0.0
+
+
+def test_open_notional_never_raises_on_a_malformed_position():
+    assert open_notional({'AAPL': SimpleNamespace()}) == 0.0
+    assert open_notional({'AAPL': bot_position('abc', 100.0)}) == 0.0
+    assert open_notional({}) == 0.0

@@ -10,7 +10,8 @@ from core.commentary import TradingCommentary
 # live in their own module so this file's edit stays localized and the rules
 # are testable without the main module's Config singleton.
 from risk.allocation import (SyncedBalances, apply_allocation_cap,
-                             capped_sync_balances, coerce_allocation)
+                             capped_sync_balances, coerce_allocation,
+                             effective_value)
 
 logger = logging.getLogger('TradingBot')
 
@@ -169,6 +170,26 @@ class RiskManagerWithCommentary:
             logger.info(f"Risk Manager synced with Schwab: P&L=${self.schwab_daily_pnl:.2f}, "
                        f"Buying Power=${self.buying_power:.2f}, Balance=${self.account_balance:.2f}")
 
+    # v-go-live-5k-r1-2026-09-28 (review round 0, critical 1): the cap is
+    # applied at READ time. `account_balance` / `buying_power` stay plain
+    # attributes so the three live write sites keep working (the engine's
+    # router, `_check_buying_power`, the dashboard's `/ws` refresh — each of
+    # which silently undid round 0's sync-time cap); every *consumer* reads
+    # through these accessors instead. See `risk/allocation.effective_value`
+    # for the rule and why "off" returns the attribute itself, untouched.
+
+    def _allocation(self) -> float:
+        """This manager's capital allocation, 0.0 when the flag is off."""
+        return coerce_allocation(Config().BOT_CAPITAL_ALLOCATION)
+
+    def effective_balance(self) -> Any:
+        """Equity the bot may size and stop against: raw, or capped."""
+        return effective_value(self.account_balance, self._allocation())
+
+    def effective_buying_power(self) -> Any:
+        """Buying power the bot may commit: raw, or capped."""
+        return effective_value(self.buying_power, self._allocation())
+
     async def calculate_position_size_with_commentary(self, signal, current_price: float) -> int:
         """Calculate position size with detailed explanation"""
         self.commentary.add_commentary(TradingCommentary(
@@ -197,8 +218,15 @@ class RiskManagerWithCommentary:
         # Strategies now set stop_loss via ATR, so risk_per_share = ATR_mult × ATR.
         # This means: shares = (equity × 1%) / (1.5 × ATR), naturally giving
         # fewer shares for volatile stocks and more for calm ones.
+        # v-go-live-5k-r1-2026-09-28: one consistent view of the allocation for
+        # this whole sizing pass. With the flag off these are the raw
+        # attributes, so every number below is byte-identical to before.
+        allocation = self._allocation()
+        eff_balance = effective_value(self.account_balance, allocation)
+        eff_buying_power = effective_value(self.buying_power, allocation)
+
         max_risk_pct = Config().RISK_PER_TRADE_PCT or 0.01
-        max_risk_amount = self.account_balance * max_risk_pct
+        max_risk_amount = eff_balance * max_risk_pct
 
         # Sanity floor: stop_distance must be at least 0.5% of price
         # to prevent absurd position sizes from ATR=0 or stale data.
@@ -235,7 +263,7 @@ class RiskManagerWithCommentary:
             type=CommentaryType.RISK_ASSESSMENT,
             symbol=signal.symbol,
             title=f"📊 Risk Calculation",
-            message=f"With {max_risk_pct:.1%} risk per trade on ${self.account_balance:,.0f} account",
+            message=f"With {max_risk_pct:.1%} risk per trade on ${eff_balance:,.0f} account",
             data={
                 'max_risk_amount': max_risk_amount,
                 'risk_per_share': risk_per_share,
@@ -470,7 +498,7 @@ class RiskManagerWithCommentary:
             atr_mult_val or "n/a",
             risk_per_share, position_size,
             position_size * current_price, dollar_risk,
-            self.account_balance, max_risk_pct,
+            eff_balance, max_risk_pct,
             confidence, strength, quality, kelly,
         )
 
@@ -493,7 +521,7 @@ class RiskManagerWithCommentary:
         # settings, (b) = $10,650 so (b) is slightly larger than (a) — bump
         # trading.max_position_value in Config.yaml to unlock (b) fully.
         abs_cap = Config().MAX_POSITION_VALUE or 10000
-        bp_cap = self.buying_power * Config().MAX_POSITION_VALUE_BP_PCT
+        bp_cap = eff_buying_power * Config().MAX_POSITION_VALUE_BP_PCT
         max_position_value = min(abs_cap, bp_cap) if bp_cap > 0 else abs_cap
 
         min_position_size = Config().MIN_POSITION_SIZE or 1  # Default 1 share
@@ -514,9 +542,9 @@ class RiskManagerWithCommentary:
             ))
 
         # Check buying power
-        if position_value > self.buying_power:
+        if position_value > eff_buying_power:
             old_size = position_size
-            position_size = int(self.buying_power * 0.95 / current_price)
+            position_size = int(eff_buying_power * 0.95 / current_price)
 
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -526,7 +554,7 @@ class RiskManagerWithCommentary:
                 message=f"Reduced position from {old_size} to {position_size} shares due to buying power constraints",
                 data={
                     'required_capital': old_size * current_price,
-                    'available_buying_power': self.buying_power,
+                    'available_buying_power': eff_buying_power,
                     'adjusted_capital': position_size * current_price
                 },
                 importance=7
@@ -544,12 +572,15 @@ class RiskManagerWithCommentary:
         # shares, which `engine._execute_signal` reads as "no trade" — so this
         # returns immediately rather than falling through to the final
         # "position size determined" commentary.
-        allocation = coerce_allocation(Config().BOT_CAPITAL_ALLOCATION)
         if allocation > 0:
+            _pre_allocation_size = position_size
             position_size = apply_allocation_cap(
                 position_size, current_price, signal.symbol,
                 allocation, self.bot_open_notional, self.commentary)
-            if position_size == 0:
+            # fix round 1, minor 4: short-circuit ONLY when this step is what
+            # zeroed the size. A size that arrived here already at 0 must keep
+            # falling through to the existing "Position Too Small" path.
+            if position_size == 0 and _pre_allocation_size > 0:
                 return 0
 
         # Ensure minimum position size
@@ -590,8 +621,11 @@ class RiskManagerWithCommentary:
         if self.margin_call:
             return False, "Margin call active - resolve before trading"
 
-        if self.buying_power < 100:
-            return False, f"Insufficient buying power: ${self.buying_power:.2f}"
+        # v-go-live-5k-r1-2026-09-28: read through the accessor so a raw
+        # overwrite cannot hand the bot the whole account back.
+        _eff_buying_power = self.effective_buying_power()
+        if _eff_buying_power < 100:
+            return False, f"Insufficient buying power: ${_eff_buying_power:.2f}"
 
         # v-bot-only-pnl-circuit-2026-06-08: prefer BOT-managed P&L
         # over account-wide schwab_daily_pnl for the circuit decision.
@@ -609,7 +643,7 @@ class RiskManagerWithCommentary:
         else:
             _circuit_pnl = self.schwab_daily_pnl
             _circuit_label = "Daily loss"
-        if _circuit_pnl <= -_cfg_circuit.MAX_DAILY_LOSS * self.account_balance:
+        if _circuit_pnl <= -_cfg_circuit.MAX_DAILY_LOSS * self.effective_balance():
             return False, (
                 f"{_circuit_label} limit exceeded "
                 f"(P&L: ${_circuit_pnl:.2f}, "
