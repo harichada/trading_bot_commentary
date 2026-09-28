@@ -381,8 +381,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         NaN-to--inf coercion rather than raw `row.score > best.score`.
         """
         def _score(row: Any) -> float:
-            # An absent row (admitted via the allowlist, never measured) scores neutral 0.0: it is
-            # displaced only by a side with positive evidence, and the pick cannot depend on order.
+            # absent row (allowlisted, unmeasured) = neutral 0.0: displaced only by positive evidence
             if row is None:
                 return 0.0
             try:
@@ -395,8 +394,6 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         best_row = None
         for entry in entries:
             row = rows_by_side.get(entry.side)      # None for an allowlisted, unmeasured side
-            # First entry wins the seat; later ones displace it only on a strictly better score.
-            # (`best_row is None` is no longer "first iteration": an admitted unmeasured side has no row.)
             if best_entry is None or _score(row) > _score(best_row):
                 best_entry, best_row = entry, row
         return best_entry, best_row
