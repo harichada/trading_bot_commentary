@@ -44,6 +44,21 @@ def clean_value(raw: str) -> str:
     return value
 
 
+def duplicate_indices(lines: list[str], name: str) -> list[int]:
+    """Every line index declaring `name` (dotenv keeps the last one; the
+    migration must comment out all of them so no stale earlier declaration
+    survives as the only active one)."""
+    out: list[int] = []
+    for idx, line in enumerate(lines):
+        stripped = line.rstrip("\r\n")
+        if not stripped or stripped.lstrip().startswith("#"):
+            continue
+        match = _ENV_LINE_RE.match(stripped)
+        if match and match.group(1) == name:
+            out.append(idx)
+    return out
+
+
 def line_ending(line: str) -> str:
     """The original line terminator of `line` (`\\r\\n`, `\\n`, `\\r`, or none)."""
     for ending in ("\r\n", "\n", "\r"):

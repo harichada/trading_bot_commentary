@@ -211,7 +211,7 @@ def test_export_prefix_and_inline_comment(tmp_path):
 
     env_text = open(env_path, encoding="utf-8").read()
     assert "TRADING_API_KEY=secret-xyz" in env_text
-    assert "# migrated-to-yaml 2026-09-28: ORB_LIVE_ENTRIES_ENABLED=1 # turn on ORB" in env_text
+    assert "# migrated-to-yaml 2026-09-28: export ORB_LIVE_ENTRIES_ENABLED=1 # turn on ORB" in env_text
 
 
 def test_crlf_line_endings_preserved(tmp_path):
@@ -223,3 +223,41 @@ def test_crlf_line_endings_preserved(tmp_path):
     raw = open(env_path, "rb").read()
     assert b"# migrated-to-yaml 2026-09-28: BOT_CAPITAL_ALLOCATION=5000\r\n" in raw
     assert b"TRADING_API_KEY=secret-xyz\r\n" in raw
+
+
+def test_duplicate_env_keys_all_commented_out(tmp_path):
+    """dotenv keeps the last declaration; after migration no earlier duplicate
+    may survive as the only active line."""
+    from scripts.migrate_console_settings import migrate
+    env = tmp_path / ".env"
+    env.write_text("RISK_PER_TRADE_PCT=0.02\nOTHER=keep\nRISK_PER_TRADE_PCT=0.01\n")
+    y = tmp_path / "c.yaml"
+    y.write_text("schwab: {}\ntrading: {}\ncommentary: {}\ntechnical_analysis: {}\n")
+    migrate(str(env), str(y), True, datetime(2026, 9, 28, 17, 0))
+    lines = env.read_text().splitlines()
+    assert "OTHER=keep" in lines
+    assert not [l for l in lines if l.startswith("RISK_PER_TRADE_PCT=")]
+    assert sum(l.startswith("# migrated-to-yaml") for l in lines) == 2
+    import yaml
+    assert yaml.safe_load(y.read_text())["trading"]["risk_per_trade_pct"] == 0.01
+
+
+def test_apply_twice_is_a_noop_exit_2(tmp_path, capsys):
+    from scripts.migrate_console_settings import main
+    env = tmp_path / ".env"
+    env.write_text("RISK_PER_TRADE_PCT=0.01\n")
+    y = tmp_path / "c.yaml"
+    y.write_text("schwab: {}\ntrading: {}\ncommentary: {}\ntechnical_analysis: {}\n")
+    argv = ["--env", str(env), "--yaml", str(y), "--apply"]
+
+    def _run():
+        try:
+            main(argv)
+        except SystemExit as exc:
+            return exc.code
+        return 0
+
+    assert _run() in (0, None)
+    before = env.read_text()
+    assert _run() == 2
+    assert env.read_text() == before

@@ -47,7 +47,8 @@ from core.config import ConfigManager  # noqa: E402
 from core.settings_console import (ALLOCATION_CEILING_PATH,  # noqa: E402
                                     DEFAULT_ALLOCATION_CEILING, KNOBS, coerce)
 from scripts.migrate_console_env import (clean_value, line_ending,
-                                          parse_env_lines, write_env_atomic)
+                                          duplicate_indices, parse_env_lines,
+                                          write_env_atomic)
 
 _STREAK_NAME = "DESK_STREAK_SINCE"
 
@@ -142,11 +143,14 @@ def _apply_changes(env_path: str, yaml_path: str, env_lines: list[str], migrated
         manager.update(ALLOCATION_CEILING_PATH, ceiling_to_write)
 
     date_str = now.strftime("%Y-%m-%d")
-    replacements = {
-        item["line_index"]: (f"# migrated-to-yaml {date_str}: {item['knob'].env_name}="
-                              f"{item['raw']}{line_ending(env_lines[item['line_index']])}")
-        for item in migrated
-    }
+    replacements = {}
+    for item in migrated:
+        # Comment out EVERY declaration of the name, not just the last-wins
+        # one, so an earlier duplicate cannot become the active value.
+        for idx in duplicate_indices(env_lines, item["knob"].env_name):
+            body = env_lines[idx].rstrip("\r\n")
+            replacements[idx] = (f"# migrated-to-yaml {date_str}: {body}"
+                                 f"{line_ending(env_lines[idx])}")
     write_env_atomic(env_path, env_lines, replacements)
     return {"env": env_backup, "yaml": yaml_backup}
 
