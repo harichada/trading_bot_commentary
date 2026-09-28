@@ -39,9 +39,11 @@
   reconciliation, immutable initial-stop/TP tracking, and `pnl_r`-derived R
   instead of the closing-stop approximation.
 - go-live `.env`: `BOT_CAPITAL_ALLOCATION=5000`, `RISK_PER_TRADE_PCT=0.01`,
-  `MAX_DAILY_LOSS=0.03`, `FIT_LANES_ENABLED=<existing>,mr_20d,mom_12_1`,
+  `MAX_DAILY_LOSS=0.03`,
+  `FIT_LANES_ENABLED=dt_momentum,gap_play,vwap_reversion,mean_rev_intraday,mr_20d,mom_12_1`,
   `FIT_LANE_LIVE_ENTRIES_ENABLED=mr_20d,mom_12_1`,
-  `FIT_LANE_LIVE_ALLOWLIST=mr_20d:long,mom_12_1:long:risk_on|mixed`,
+  `FIT_LANE_LIVE_ALLOWLIST="mr_20d:long,mom_12_1:long:risk_on|mixed"` (quoted —
+  an unquoted `|` breaks any shell that sources `.env`),
   `FIT_LANE_ALLOWLIST_STRENGTH=0.8`, `SWING_ALLOW_OVERNIGHT=1`,
   `SWING_MAX_HOLD_SESSIONS=20`, `ENABLE_DESK_LIMITS=1`, `ENABLE_PLAYBOOK_GATE=1`,
   `LEDGER_INTEGRITY=1`; `STRATEGY_FIT_SHADOW` stays on (the allowlist is the
@@ -49,13 +51,44 @@
   `docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the sleeve lanes",
   `docs/desk.md` (flags table + day-one checklist),
   `docs/research/strategy_hunt.md` § "Scheduling" and § "Universe context".
-- **Pending at time of writing, not yet committed:** the engine-wedge fix
-  (bounded provider calls, an isolated yfinance subprocess pool, a loop
-  heartbeat, and an external `scripts/bot_watchdog.sh` restarter) diagnosed
-  after the live process wedged on 2026-09-28 — see
-  `.superpowers/sdd/2026-09-28-go-live-5k/task-4-brief.md` and
-  `docs/BOT_OPERATIONS_MANUAL.md` § 9.8 for the design; confirm against
-  `git log` before relying on it.
+- **Go-live executed.** Live since 11:52 ET (after-close gate lifted at the
+  user's request; no bot-managed positions open at the time). Restarted again
+  13:13 ET onto `d66380d` once the engine-wedge fix below cleared review; pid
+  1300568, live mode, sleeve lanes `live=True`, allocation active, watchdog
+  health ok. Backups: `.env.bak_pre_golive_20260928`,
+  `Config().yaml.bak_pre_golive_20260928`.
+- **Losing-day streak reset.** `DESK_STREAK_SINCE=2026-09-28` (commit
+  `bd54992`) floors the desk's `two_losing_days` sit-out lookback at go-live
+  day, at the user's request — sessions before it never count toward the
+  streak. Today's plan was rebuilt with streak 0 / prior-day R 0. Docs:
+  `docs/desk.md`.
+- **Nightly cron.** `scripts/nightly_strategy_hunt.sh` installed at 22:30 ET
+  Monday–Friday (see the "chore(strategy-hunt)" entry above); a 09:49–10:06 ET
+  test run on 2026-09-28 completed clean (rc 0, 17 min).
+- **fix(engine): the engine-wedge fix landed.** Bounded every synchronous
+  provider call reachable from the engine's event loop
+  (`core/provider_calls.py`: `provider_call`/`provider_call_sync` for market
+  data, `broker_call`/`broker_call_sync` for the 20 Schwab order/account call
+  sites, raising `BrokerTimeoutError` on timeout instead of returning `None`);
+  moved all yfinance usage into a spawn-context subprocess pool that is
+  killed and rebuilt on a timeout (`core/isolated_calls.py`); added a
+  per-loop heartbeat that logs `loop_lag` when a loop stalls
+  (`core/loop_heartbeat.py`); and added an external restarter,
+  `scripts/bot_watchdog.sh`, now cron-installed live (not `--dry-run`) every
+  5 minutes, 06:00–19:55 ET Monday–Friday, which restarts the bot on two
+  consecutive unhealthy `/api/status` checks (capped at 2 restarts/day,
+  otherwise `OPERATOR ACTION REQUIRED`). The screener's quality gate now
+  fails closed on missing/short/erroring data instead of passing symbols
+  through, and the close-timeout audit
+  (`zombie_pending`/`broker_timeout_close`) says plainly that a position
+  whose close call timed out has no broker-side protection and needs
+  operator action. Diagnosed after the live process wedged on 2026-09-28 (247
+  of 251 threads parked in `futex_wait`, `/api/status` unresponsive 60+ s) —
+  root cause a GIL-holding yfinance/curl_cffi hang. Commits `066174e`,
+  `feba6ca`, `56bf7fd`, `a5382bc` (tests pinned at `d66380d`). Full
+  round-by-round facts and RED/GREEN evidence:
+  `.superpowers/sdd/2026-09-28-go-live-5k/task-4-report.md`. Docs:
+  `docs/BOT_OPERATIONS_MANUAL.md` § 9.8.
 
 ## 2026-09-26
 

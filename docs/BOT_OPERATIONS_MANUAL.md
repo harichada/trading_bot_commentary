@@ -1179,29 +1179,48 @@ so it does not double-govern the same entries with a stricter, PASS-only rule.
 ### 9.3 The go-live `.env` block
 
 Applied at the post-close restart on 2026-09-28 (after removing the legacy
-`MAX_DAILY_LOSS="500"` line):
+`MAX_DAILY_LOSS="500"` line). This is the block as it stands in `.env` today
+(go-live 11:52 ET, streak reset added shortly after, final restart 13:13 ET
+onto `d66380d`) — names and values, verbatim:
 
 ```
+# v-go-live-5k-2026-09-28: live sleeve inside a $5,000 margin-funded allocation (user directive 2026-09-28)
 BOT_CAPITAL_ALLOCATION=5000
 RISK_PER_TRADE_PCT=0.01
 MAX_DAILY_LOSS=0.03
-FIT_LANES_ENABLED=<existing>,mr_20d,mom_12_1
+FIT_LANES_ENABLED=dt_momentum,gap_play,vwap_reversion,mean_rev_intraday,mr_20d,mom_12_1
 FIT_LANE_LIVE_ENTRIES_ENABLED=mr_20d,mom_12_1
-FIT_LANE_LIVE_ALLOWLIST=mr_20d:long,mom_12_1:long:risk_on|mixed
+FIT_LANE_LIVE_ALLOWLIST="mr_20d:long,mom_12_1:long:risk_on|mixed"
 FIT_LANE_ALLOWLIST_STRENGTH=0.8
 SWING_ALLOW_OVERNIGHT=1
 SWING_MAX_HOLD_SESSIONS=20
 ENABLE_DESK_LIMITS=1
 ENABLE_PLAYBOOK_GATE=1
 LEDGER_INTEGRITY=1
+
+# streak reset at go-live (user, 2026-09-28): sessions before this date never count as losing days
+DESK_STREAK_SINCE=2026-09-28
 ```
 
 `STRATEGY_FIT_SHADOW` is **not** set (stays at its default `True`) — see 9.2.
-`<existing>` means whatever families were already registered in
-`FIT_LANES_ENABLED` before go-live; `mr_20d` and `mom_12_1` are appended, not
-replacing them. `SWING_ALLOW_OVERNIGHT=1` / `SWING_MAX_HOLD_SESSIONS=20`
+`FIT_LANES_ENABLED` lists every family already registered before go-live
+(`dt_momentum,gap_play,vwap_reversion,mean_rev_intraday`) plus the two
+appended for the sleeve (`mr_20d,mom_12_1`) — none of the pre-existing
+families were removed. `SWING_ALLOW_OVERNIGHT=1` / `SWING_MAX_HOLD_SESSIONS=20`
 (`core/config.py:4278`, `:4291`) let the sleeve's multi-day holds carry past a
-single session, capped at 20 sessions.
+single session, capped at 20 sessions. `DESK_STREAK_SINCE=2026-09-28`
+(`core/config.py:4593`, `core/loops/desk_loop.py::_streak_since`) floors the
+losing-day-streak lookback at go-live day — sessions before it can never
+trigger the desk's `two_losing_days` sit-out rule (see `docs/desk.md`).
+
+**`.env` quoting rule.** `FIT_LANE_LIVE_ALLOWLIST` must be quoted —
+`FIT_LANE_LIVE_ALLOWLIST="mr_20d:long,mom_12_1:long:risk_on|mixed"` — because
+a bare, unquoted `|` in a value is a pipe to any shell that `source`s `.env`
+(e.g. `scripts/nightly_strategy_hunt.sh`, an operator's own `source .env`),
+which breaks the export. The bot's own Python env loader was never affected
+by the unquoted form (it doesn't shell-interpret the file), but the value was
+quoted at go-live anyway so every consumer of `.env` agrees. If you edit this
+line, keep the quotes.
 
 ### 9.4 Sizing table
 
@@ -1286,50 +1305,144 @@ minutes (rc 0). If `fit:mom_12_1` stops signalling entirely, check the mtime
 of `context/universe_daily.parquet` and this job's log first (see 9.8's carry
 window).
 
-### 9.8 Watchdog and the wedge fix (landing 2026-09-28)
+### 9.8 Watchdog and the wedge fix (landed 2026-09-28)
 
-As of this writing, `scripts/bot_watchdog.sh`, `core/provider_calls.py`,
-`core/isolated_calls.py`, and `core/loop_heartbeat.py` exist on disk but are
-**not yet committed** (Task 4 of the go-live plan, dispatched separately);
-this subsection describes the design from
-`.superpowers/sdd/2026-09-28-go-live-5k/task-4-brief.md` and must be
-confirmed against the code once it lands.
+`scripts/bot_watchdog.sh`, `core/provider_calls.py`, `core/isolated_calls.py`,
+and `core/loop_heartbeat.py` are committed and were on the live process from
+the go-live restart onward. Landing history: **066174e** (bounded provider
+calls, isolated yfinance subprocess, loop heartbeat, external watchdog) →
+**feba6ca** (strategy-alias calls bounded, pool rebuild on probe failure,
+watchdog checks engine state, screener fails closed) → **56bf7fd** (bounded
+broker calls with explicit timeout errors; active-open-desk and desk scan
+bounded; fail-closed vetoes on provider timeout) → **a5382bc** (screener
+quote uses the 3 s quote budget; close-timeout audit says the position is
+unprotected) → tests pinned at **d66380d**, which is the build the bot has
+run on since the 13:13 ET restart (pid 1300568). Full facts, RED/GREEN
+evidence and round-by-round findings:
+`.superpowers/sdd/2026-09-28-go-live-5k/task-4-report.md`.
 
 The trigger: on 2026-09-28 the live process wedged (247 of 251 threads parked
 in `futex_wait`, `/api/status` unresponsive for 60+ seconds, no desk plan
 built) after a synchronous yfinance/curl_cffi call held the GIL. The fix has
-three layers:
+four layers:
 
-1. **Bounded provider calls.** Every synchronous `self.data_provider.get_quote(...)`
-   / `get_market_data(...)` call reachable from the engine's event loop routes
-   through one helper backed by a dedicated `ThreadPoolExecutor`
-   (`Config().PROVIDER_EXECUTOR_WORKERS`, default 8, `core/config.py:4593`)
-   plus `asyncio.wait_for` (`Config().PROVIDER_HISTORY_TIMEOUT_SEC` for
-   history calls, `core/config.py:4617`). A timeout returns `None`, logs at
-   most once a minute per call site, and the caller keeps its existing
-   fallback; the position-management loop falls back to the last known quote
-   rather than blocking.
-2. **Isolated yfinance subprocess pool** (`core/isolated_calls.py`) — all
+1. **Bounded provider calls.** Every synchronous market-data call
+   (`self.data_provider.get_quote(...)` / `get_market_data(...)`, plus the
+   five `schwab_provider`-alias reads inside `strategies/builtin.py`) reachable
+   from the engine's event loop routes through `provider_call` /
+   `provider_call_sync` (`core/provider_calls.py`), backed by one dedicated
+   `ThreadPoolExecutor` sized `Config().PROVIDER_EXECUTOR_WORKERS` (default
+   `8`, `core/config.py:4604`). Quote calls get `Config().QUOTE_FETCH_TIMEOUT_SEC`
+   (3 s, `core/config.py:1320`); bar/history calls get
+   `Config().PROVIDER_HISTORY_TIMEOUT_SEC` (10 s, `core/config.py:4628`). A
+   timeout returns `None`, logs at most once a minute per call site
+   (`provider_call_timeout`, below), and the caller keeps its existing
+   fallback. `core/engine.py` has zero bare `get_quote`/`get_market_data`
+   calls (enforced by a wiring test); the position loop's own quote read is
+   the critical one — see the `quote_timeout` playbook entry below.
+2. **Bounded broker calls.** The 20 synchronous Schwab order/account calls
+   (`place_order`, `get_order`, `cancel_order`, `get_orders_for_account`,
+   `get_account`, `get_quotes`) route through `broker_call` /
+   `broker_call_sync`, budget `Config().BROKER_CALL_TIMEOUT_SEC` (default
+   15 s, `core/config.py:4661` — deliberately longer than the market-data
+   budgets, since cutting an order call short leaves its fate at the broker
+   unknown). On timeout these **raise** `BrokerTimeoutError` rather than
+   returning `None`: the entry path does not retry (the order may already be
+   live at Schwab; `_check_order_status` reconciles), and the close path is
+   the `zombie_pending`/`broker_timeout_close` case below.
+3. **Isolated yfinance subprocess pool** (`core/isolated_calls.py`) — all
    yfinance usage (screener refresh, news lookups, the fallback realtime
-   provider) runs in a `ProcessPoolExecutor` that is torn down and recreated
-   on a timeout, so a GIL-holding hang in a child process cannot touch the
-   engine's own loop.
-3. **Loop heartbeat + external watchdog.** `core/loop_heartbeat.py`
-   (`Config().LOOP_LAG_WARN_SEC`, `core/config.py:4634`) updates a timestamp
-   every second on each loop and logs `loop_lag loop=<name> lag=<s>
-   threads=<n>` when it falls behind — with the caveat that a true GIL-holding
-   hang freezes this thread too, which is why an **external** restarter
-   exists: `scripts/bot_watchdog.sh`, cron-installed for every 5 minutes,
-   06:00–20:00 ET Monday–Friday, `curl -m 30 /api/status`; on two consecutive
-   failures, **if fewer than 2 restarts have happened that day**, it kills the
-   bot process (TERM, 20 s grace, then KILL) and relaunches it (`nohup python
-   trading_bot_commentary_updated.py`, then `POST /api/start`, then
-   `POST /api/toggle-mode {"mode":"live"}`), logging to `bot_watchdog.log`
-   without ever printing the API key. It has a `--dry-run` mode that only
-   reports. The 2-restarts-per-day limit exists so a persistent problem pages
-   the operator instead of restart-looping all day.
+   provider) runs in a spawn-context `ProcessPoolExecutor` (2 workers) that is
+   **SIGKILLed and rebuilt** on a timeout, so a GIL-holding hang in a child
+   process cannot touch the engine's own loop.
+   `Config().ISOLATED_YF_ENABLED` (default `True`, `core/config.py:4683`) is
+   the operator's escape hatch: set `0` to route the same calls back through
+   the bounded thread pool (still timeout-bounded, no longer GIL-proof) if
+   the subprocess pool itself becomes the problem.
+4. **Loop heartbeat + external watchdog.** `core/loop_heartbeat.py`
+   (`Config().LOOP_LAG_WARN_SEC`, default 5 s, `core/config.py:4645`) updates
+   a timestamp every second on each loop and logs `loop_lag loop=<name>
+   lag=<s> threads=<n> threshold=<s>` when it falls behind — with the caveat
+   documented in the module itself: a true GIL-holding hang freezes this
+   thread too, which is why an **external** restarter exists:
+   `scripts/bot_watchdog.sh`, cron-installed (see below).
 
-Confirm this section against the committed code (`git log --oneline -- scripts/bot_watchdog.sh core/provider_calls.py`) before relying on the specifics above.
+#### Operator playbook: reading the new audit/log lines
+
+- **`position_manager … skip … quote_timeout`** (`core/engine.py`, position
+  loop). The bot could not get a fresh quote *and* has no last-known price
+  for the symbol within this cycle. It skips managing that position for the
+  cycle rather than act on a price it does not have — no action needed unless
+  this repeats for the same symbol across multiple cycles, which points at a
+  broken quote feed for that symbol specifically.
+- **`position_manager … zombie_pending … broker_timeout_close`**
+  (`core/engine.py:2872`, `BrokerTimeoutError` on the close-order call). This
+  is the one that needs a human. The bracket was already cancelled before the
+  close was attempted, Schwab did not answer within
+  `BROKER_CALL_TIMEOUT_SEC` (15 s), and the bot marks the position ZOMBIE:
+  **it has no broker-side protection (no stop, no take-profit) and no
+  automatic exits until you resolve it.** OPERATOR ACTION REQUIRED — check
+  the order/position directly at Schwab and close or re-protect it manually;
+  do not assume the bot will retry.
+- **`provider_call_timeout site=<tag> timeout=<s>s suppressed=<n>
+  threads=<n> — caller falls back`** (`core/provider_calls.py`, rate-limited
+  to one line per site per 60 s). A market-data or `schwab_provider`-alias
+  call timed out; the caller degraded per its documented fallback (skip,
+  keep last value, fail-closed veto — see the round reports for the full
+  per-site table). A single line is normal under a slow provider. Bursts
+  across many sites, or the same site repeating every cycle, means the
+  provider is genuinely degraded — check Schwab/Yahoo status before touching
+  any timeout knob; if provider concurrency legitimately needs more than 8
+  in-flight calls, raise `PROVIDER_EXECUTOR_WORKERS` rather than the
+  timeouts.
+- **`loop_lag loop=<name> lag=<s> threads=<n> threshold=<s>`**
+  (`core/loop_heartbeat.py`, WARNING, rate-limited to one line per loop per
+  minute). A registered loop (position loop, analysis loop, desk loop, the
+  API's own heartbeat) has not pulsed for longer than `LOOP_LAG_WARN_SEC`
+  (5 s). This is the **in-process** early warning; if the process is still
+  logging at all, this is the loop that is stuck, which narrows where to
+  look. It cannot see a GIL-holding hang (the heartbeat thread freezes too in
+  that case) — a `loop_lag` line means the process is alive but a loop
+  stalled; **silence for minutes with no other log activity** is the
+  GIL-wedge signature the external watchdog exists to catch instead.
+
+#### The external watchdog (`scripts/bot_watchdog.sh`)
+
+Cron, installed live (not `--dry-run`) on this host (`crontab -l`):
+
+```
+*/5 6-19 * * 1-5 /home/nvidia/claude/grok/trading_bot_commentary/scripts/bot_watchdog.sh >> /home/nvidia/claude/grok/trading_bot_commentary/bot_watchdog.log 2>&1
+```
+
+Every 5 minutes, 06:00–19:55 local server time, Monday–Friday (the script
+converts to ET internally via `TZ=America/New_York date …` for its own
+09:25–16:05 live-window check, so it does not depend on cron's environment):
+`curl -m 30 GET /api/status`, parsed. Healthy requires **all**
+of: HTTP 200, `"bot_running": true`, and — inside the live window (09:25–16:05
+ET, `WATCHDOG_LIVE_FROM`/`WATCHDOG_LIVE_TO`, unless `WATCHDOG_REQUIRE_LIVE=0`
+or `=1` override the auto window) — `"mode": "live"`. State
+(`bot_watchdog.state`) carries the consecutive-failure count and today's
+restart count across cron runs. On the **second consecutive** failure, and
+only if fewer than `MAX_RESTARTS_PER_DAY` (default 2) restarts have happened
+today, it restarts the bot: TERM → 20 s grace → KILL if still alive, then
+`nohup python trading_bot_commentary_updated.py`, poll `/api/status` up to
+120 s, `POST /api/start`, sleep 25 s, `POST /api/toggle-mode
+{"mode":"live"}`. A restart budget already spent that day, or a restart that
+does not come back healthy, logs `OPERATOR ACTION REQUIRED` and exits
+non-zero — that is the signal to look at `bot_watchdog.log` and intervene by
+hand rather than wait for another cron tick. `--dry-run` reports only (no
+signal, no launch, no state write); the API key is read from `.env` only
+when not already exported and passed to curl via a mode-600 header file, so
+it never appears in `ps` or the log.
+
+**To pause the watchdog** without removing the fix itself:
+- Outside RTH but want it to stop expecting live mode:
+  `WATCHDOG_REQUIRE_LIVE=0` (exported, or added as a line the script's
+  environment picks up) suppresses the `mode_not_live` failure reason so a
+  deliberate simulation-mode period does not accumulate failures/restarts.
+- To stop it from running at all: remove (or comment out) the `*/5 6-19 * *
+  1-5 …` line from `crontab -e`. The script itself is inert until cron (or an
+  operator) invokes it — nothing else calls it automatically.
 
 ### 9.9 Ledger-integrity migration
 

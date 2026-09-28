@@ -88,6 +88,7 @@ below needs to be set to run the desk):
 | `DESK_REFRESH_TIME_ET` | `09:35` | ET wall-clock time of the in-play refresh. |
 | `DESK_JOURNAL_TIME_ET` | `16:05` | ET wall-clock time of the journal write. |
 | `DESK_CALENDAR_PATH` | `data/desk/calendar.json` | Economic-calendar file the plan's sit-out rule reads. |
+| `DESK_STREAK_SINCE` | `""` (**`2026-09-28` in `.env` since the go-live streak reset**) | Floors the `two_losing_days` sit-out rule's lookback (`STREAK_LOOKBACK_DAYS=21` by default, `core/loops/desk_loop.py`) at this ISO date — sessions before it never count as losing days. Empty (default) leaves the normal 21-day lookback in place. Set at the user's request at go-live ("start counting from today"); unparsable values are logged and ignored (`desk_loop: DESK_STREAK_SINCE unusable`), falling back to the normal window. |
 
 **Day one recommendation: `DESK_SCAN_MAX_SYMBOLS=20`.** The default 60 makes the
 09:35 refresh fire roughly 60-80 provider calls in a two-minute window right
@@ -482,8 +483,12 @@ Before the first live session with `ENABLE_DESK_LIMITS=1` /
    behaviour is already known good.
 3. **09:00 ET — read the plan.** `GET /api/desk/plan` or
    `grep 'engine_decision component=desk_limit' trading_bot.log`. Confirm it
-   is not a sit-out day for a reason that surprises you (losing streak,
-   stale strategy-fit snapshot, economic-calendar blackout).
+   is not a sit-out day for a reason that surprises you (`two_losing_days`,
+   stale strategy-fit snapshot, economic-calendar blackout, VIX spike — first
+   match wins, `core/desk/daily_plan.py`). The losing-day streak only looks
+   back to `DESK_STREAK_SINCE` (`.env` `2026-09-28` since the go-live reset —
+   see "Other desk config" above); a `two_losing_days` sit-out from a losing
+   streak that started before that date is a bug, not the rule working.
 4. **09:35 ET — confirm the in-play refresh ran.** The plan file's `in_play`
    list should be populated; `scanned=` in the `desk_inplay` audit line
    should roughly match `DESK_SCAN_MAX_SYMBOLS`.
