@@ -6,6 +6,11 @@ import numpy as np
 
 from core.models import CommentaryType, TradingSignal
 from core.commentary import TradingCommentary
+# v-go-live-5k-2026-09-28 (Task 1): the capital-allocation cap's pure rules
+# live in their own module so this file's edit stays localized and the rules
+# are testable without the main module's Config singleton.
+from risk.allocation import (SyncedBalances, apply_allocation_cap,
+                             capped_sync_balances, coerce_allocation)
 
 logger = logging.getLogger('TradingBot')
 
@@ -110,14 +115,53 @@ class RiskManagerWithCommentary:
         self.buying_power = account_balance * 0.5
         self.commentary = commentary_system
         self.last_schwab_sync = None
+        # v-go-live-5k-2026-09-28: raw (uncapped) Schwab figures, kept for
+        # logging and the dashboard. Identical to account_balance /
+        # buying_power whenever BOT_CAPITAL_ALLOCATION is off (the default).
+        self.schwab_equity = account_balance
+        self.schwab_buying_power = self.buying_power
+        # Total market value of the positions the BOT manages, refreshed once
+        # per cycle by `engine._compute_bot_open_notional`. 0.0 is the honest
+        # "nothing open yet" starting point; the allocation headroom is
+        # `allocation - bot_open_notional`.
+        self.bot_open_notional = 0.0
 
     def sync_with_schwab_data(self, schwab_account_info: Dict[str, float]):
         """Sync risk manager with actual Schwab account data"""
         if schwab_account_info:
             # Update with real Schwab data ONLY
             self.schwab_daily_pnl = schwab_account_info.get('day_pnl', 0)
-            self.buying_power = schwab_account_info.get('buying_power', self.buying_power)
-            self.account_balance = schwab_account_info.get('balance', self.account_balance)
+            raw_buying_power = schwab_account_info.get('buying_power', self.buying_power)
+            raw_balance = schwab_account_info.get('balance', self.account_balance)
+
+            # v-go-live-5k-2026-09-28: cap both figures at the bot's capital
+            # allocation. With the allocation off (default 0.0) this branch is
+            # skipped entirely and the two assignments below are exactly the
+            # pre-allocation ones.
+            allocation = coerce_allocation(Config().BOT_CAPITAL_ALLOCATION)
+            if allocation <= 0:
+                self.buying_power = raw_buying_power
+                self.account_balance = raw_balance
+                self.schwab_buying_power = raw_buying_power
+                self.schwab_equity = raw_balance
+            else:
+                synced = capped_sync_balances(
+                    raw_balance, raw_buying_power, allocation,
+                    SyncedBalances(balance=self.account_balance,
+                                   buying_power=self.buying_power,
+                                   schwab_equity=self.schwab_equity,
+                                   schwab_buying_power=self.schwab_buying_power))
+                self.account_balance = synced.balance
+                self.buying_power = synced.buying_power
+                self.schwab_equity = synced.schwab_equity
+                self.schwab_buying_power = synced.schwab_buying_power
+                logger.info(
+                    "bot_capital_allocation allocation=$%.2f schwab_equity=$%.2f "
+                    "schwab_buying_power=$%.2f -> balance=$%.2f buying_power=$%.2f "
+                    "open_notional=$%.2f",
+                    allocation, self.schwab_equity, self.schwab_buying_power,
+                    self.account_balance, self.buying_power, self.bot_open_notional,
+                )
 
             self.last_schwab_sync = datetime.now()
 
@@ -487,6 +531,26 @@ class RiskManagerWithCommentary:
                 },
                 importance=7
             ))
+
+        # v-go-live-5k-2026-09-28: the bot's capital-allocation cap, applied
+        # last so it binds on whatever the earlier caps allowed. Inert unless
+        # Config.BOT_CAPITAL_ALLOCATION > 0 (the default), in which case this
+        # whole block is skipped and sizing is byte-identical to before.
+        #
+        # The rule is portfolio-level, not per-position: the new position's
+        # notional must fit in `allocation - bot_open_notional` (the engine
+        # refreshes `bot_open_notional` once per cycle from bot-managed
+        # positions). With no headroom for even one share the step returns 0
+        # shares, which `engine._execute_signal` reads as "no trade" — so this
+        # returns immediately rather than falling through to the final
+        # "position size determined" commentary.
+        allocation = coerce_allocation(Config().BOT_CAPITAL_ALLOCATION)
+        if allocation > 0:
+            position_size = apply_allocation_cap(
+                position_size, current_price, signal.symbol,
+                allocation, self.bot_open_notional, self.commentary)
+            if position_size == 0:
+                return 0
 
         # Ensure minimum position size
         if position_size < min_position_size:

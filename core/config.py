@@ -157,6 +157,57 @@ class ConfigManager:
 # Initialize configuration
 config_manager = ConfigManager()
 
+
+_ENV_FRACTION_WARNED = set()
+
+
+def _env_fraction(name: str, yaml_value):
+    """v-go-live-5k-2026-09-28: an env override for a *fraction-of-equity*
+    knob (`MAX_DAILY_LOSS`, `RISK_PER_TRADE_PCT`), or the yaml value.
+
+    Only accepts `0 < value <= 1.0`. This is a hard boundary check, not
+    politeness: `.env` on this machine already carries a legacy
+    `MAX_DAILY_LOSS="500"` (written as *dollars*), and honouring that as a
+    fraction would set the daily-loss circuit to 500x equity — i.e. switch the
+    circuit off. Anything outside the fraction range is refused and the yaml
+    value stands, so adding these overrides cannot change today's behaviour.
+    The refusal is logged once per key (properties are read every cycle).
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return yaml_value
+    value = _env_float(raw)
+    if value is not None and 0 < value <= 1.0:
+        return value
+    if name not in _ENV_FRACTION_WARNED:
+        _ENV_FRACTION_WARNED.add(name)
+        logging.getLogger('TradingBot').warning(
+            "%s=%r is not a fraction in (0, 1] — ignoring the env override and "
+            "using the yaml value %r", name, raw, yaml_value,
+        )
+    return yaml_value
+
+
+def _env_float(raw: Optional[str]) -> Optional[float]:
+    """v-go-live-5k-2026-09-28: a float from an env string, or None.
+
+    None for anything unusable — empty, non-numeric, NaN, ±inf — so every
+    caller can fall back to its yaml default instead of propagating a typo
+    into live sizing or a loss circuit.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    if value != value or value in (float('inf'), float('-inf')):
+        return None
+    return value
+
 # ============================================================================
 # TRADING LOSS CIRCUIT BREAKER
 # ============================================================================
@@ -255,7 +306,14 @@ class Config:
 
     @property
     def MAX_DAILY_LOSS(self):
-        return self.manager.get('trading.max_daily_loss', 0.05)
+        # v-go-live-5k-2026-09-28: env override added (was yaml-only) so the
+        # go-live flag set can tighten the daily-loss circuit to 3% without
+        # editing Config().yaml. This is a FRACTION of equity, so only
+        # (0, 1] is accepted — see `_env_fraction`: the pre-existing
+        # `.env` entry MAX_DAILY_LOSS="500" is dollars, and honouring it
+        # would switch the circuit off.
+        return _env_fraction("MAX_DAILY_LOSS",
+                             self.manager.get('trading.max_daily_loss', 0.05))
 
     @property
     def MAX_CONSECUTIVE_LOSSES(self):
@@ -2125,7 +2183,11 @@ class Config:
         Tuning: 0.01 = conservative (original), 0.015 = moderate (new),
         0.02 = aggressive. Anything above 0.02 is a professional-trader
         territory where a bad streak can deplete equity fast."""
-        return self.manager.get('trading.risk_per_trade_pct', 0.015)
+        # v-go-live-5k-2026-09-28: env override added so the go-live flag set
+        # can pin 1% risk without editing Config().yaml. A fraction of equity,
+        # so only (0, 1] is accepted; anything else keeps the yaml value.
+        return _env_fraction("RISK_PER_TRADE_PCT",
+                             self.manager.get('trading.risk_per_trade_pct', 0.015))
 
     # ──────────────────────────────────────────────────────────────────
     # v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
@@ -4430,6 +4492,66 @@ class Config:
         if env_val is not None:
             return env_val
         return str(self.manager.get('trading.desk_calendar_path', 'data/desk/calendar.json'))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-go-live-5k-2026-09-28
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def BOT_CAPITAL_ALLOCATION(self) -> float:
+        """Hard dollar slice of the brokerage account the bot may work with.
+
+        Default 0.0 = OFF, and off means today's behaviour exactly: sizing and
+        the daily-loss circuit keep using whole-account equity and buying power
+        straight from Schwab.
+
+        When > 0 (the go-live value is 5000 on a ~$46.5k margin account), the
+        risk manager caps `account_balance` and `buying_power` at this figure
+        (raw Schwab numbers are kept on `schwab_equity` / `schwab_buying_power`),
+        and no new position may push the bot's total open notional past it. A
+        3% `MAX_DAILY_LOSS` against a $5,000 allocation therefore trips at
+        $150, not at 3% of the whole account.
+
+        Env `BOT_CAPITAL_ALLOCATION` wins over yaml
+        `trading.bot_capital_allocation`. Negative or unusable values mean OFF
+        — a malformed allocation must fail open to today's behaviour rather
+        than silently starve the bot of size.
+        """
+        env_val = os.getenv("BOT_CAPITAL_ALLOCATION")
+        if env_val is not None:
+            parsed = _env_float(env_val)
+            return parsed if parsed is not None and parsed > 0 else 0.0
+        parsed = _env_float(str(self.manager.get('trading.bot_capital_allocation', 0.0)))
+        return parsed if parsed is not None and parsed > 0 else 0.0
+
+    @property
+    def FIT_LANE_LIVE_ALLOWLIST(self) -> tuple:
+        """Fit-lane (family, side) lanes the desk authorises for live entries even without a
+        walk-forward PASS row, optionally only in named market-context regimes.
+
+        Entries are `family:side[:regime1|regime2]`, e.g.
+        "mr_20d:long,mom_12_1:long:risk_on|mixed". Default "" = OFF, which leaves the
+        pre-existing rule alone: a fit lane emits a live signal only for a walk-forward PASS row
+        (and no PASS row exists in the current snapshot, so every lane is shadow-only).
+
+        The grammar, the regime matching and the admission rule itself live in
+        `strategies/fit_lane_admission.py` — this property only hands the raw entries through, so
+        `core` never has to know what a regime is. An allowlisted lane is still refused when the
+        symbol's own unconditional fit row is FAIL, still needs its family in
+        `FIT_LANE_LIVE_ENTRIES_ENABLED`, and still faces every downstream gate (desk limits, the
+        playbook gate, the swing overnight gate, risk sizing, the allocation cap).
+
+        Env `FIT_LANE_LIVE_ALLOWLIST` (comma list) wins over yaml
+        `trading.fit_lane_live_allowlist` (a comma string or a list).
+        """
+        env_val = os.getenv("FIT_LANE_LIVE_ALLOWLIST")
+        if env_val is not None:
+            raw = env_val
+        else:
+            raw = self.manager.get('trading.fit_lane_live_allowlist', "")
+        if isinstance(raw, (list, tuple)):
+            return tuple(str(v).strip() for v in raw if str(v).strip())
+        return tuple(v.strip() for v in str(raw).split(',') if v.strip())
 
 
 # Initialize configuration

@@ -5240,6 +5240,11 @@ class TradingEngineWithCommentary:
                         # local state — never blocks on network.
                         try:
                             self.risk_manager.bot_daily_pnl = self._compute_bot_daily_pnl()
+                            # v-go-live-5k-2026-09-28: same cadence, same book —
+                            # how much of BOT_CAPITAL_ALLOCATION is deployed.
+                            # Inert unless the allocation flag is on; the risk
+                            # manager only reads it then.
+                            self.risk_manager.bot_open_notional = self._compute_bot_open_notional()
                             logger.info(
                                 "Bot-only P&L Check: $%.2f (Schwab P&L: $%.2f, "
                                 "Limit: $%.2f)",
@@ -9999,6 +10004,54 @@ class TradingEngineWithCommentary:
             pass
 
         return realized + unrealized
+
+    def _compute_bot_open_notional(self) -> float:
+        """v-go-live-5k-2026-09-28 (Task 1): market value of the BOT's open
+        positions, in dollars.
+
+        Read by `risk/manager.py` as `bot_open_notional` to work out how much
+        of `Config.BOT_CAPITAL_ALLOCATION` is still free for a new position.
+        Applies exactly the same exclusion filters as `_compute_bot_daily_pnl`
+        so the allocation measures the same book the P&L circuit does:
+        `managed_by_bot=True` only, minus external / manually-managed /
+        long-term holdings and the `HANDS_OFF_DENYLIST`.
+
+        Notional is `abs(quantity) x current_price` — absolute because a short
+        consumes allocation exactly like a long. `current_price` is the
+        PriceBook reactive pull, which already falls back to `entry_price` when
+        there is no quote.
+
+        Pure local-state read, no network. Per-position try/except: one
+        malformed record is skipped, never raised, so the allocation cap can
+        never crash the analysis loop. Returns 0.0 if everything fails — which
+        the risk manager reads as "nothing open", the same as a fresh session.
+        """
+        denylist = Config().HANDS_OFF_DENYLIST
+        notional = 0.0
+        try:
+            for symbol, position in self.positions.items():
+                try:
+                    if symbol.upper() in denylist:
+                        continue
+                    if not getattr(position, 'managed_by_bot', False):
+                        continue
+                    if getattr(position, 'is_external', False):
+                        continue
+                    if getattr(position, 'is_manually_managed', False):
+                        continue
+                    if getattr(position, 'is_long_term', False):
+                        continue
+                    qty = abs(float(getattr(position, 'quantity', 0) or 0))
+                    price = float(getattr(position, 'current_price', 0) or 0)
+                    if qty <= 0 or price <= 0:
+                        continue
+                    notional += qty * price
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return notional
 
     async def _get_real_account_info(self) -> Dict[str, float]:
         """Get real account information directly from Schwab - NO CALCULATIONS"""
