@@ -81,6 +81,15 @@ def _knob_row(knob, manager: Any, cfg: Any, pending_by_key: dict) -> dict:
     }
 
 
+_REASON_MAX = 500
+
+
+def _reason(body: dict) -> str:
+    """Operator-supplied reason, coerced to a bounded string so the audit
+    file cannot be grown without limit from the dashboard."""
+    return str(body.get("reason", "") or "")[:_REASON_MAX]
+
+
 def _rejection_status(reason: str) -> int:
     if reason == "unknown setting":
         return 404
@@ -114,7 +123,7 @@ def get_console() -> Any:
 def put_console(key: str, body: dict) -> Any:
     manager, cfg = _manager(), _cfg()
     desk_dir = cfg.DESK_DATA_DIR
-    reason = body.get("reason", "")
+    reason = _reason(body)
     result = submit_change(manager, cfg, desk_dir, key, body.get("value"),
                             now=_now(), actor=_ACTOR, reason=reason)
     result_dict = asdict(result)
@@ -132,7 +141,7 @@ def post_block_entries(body: dict) -> Any:
     manager, cfg = _manager(), _cfg()
     result = set_block_new_entries(
         manager, cfg.DESK_DATA_DIR, bool(body.get("block")), now=_now(), actor=_ACTOR,
-        reason=body.get("reason", ""), confirm=body.get("confirm", ""),
+        reason=_reason(body), confirm=body.get("confirm", ""),
     )
     result_dict = asdict(result)
     event = "block_entries" if result.status == "applied" else "rejected"

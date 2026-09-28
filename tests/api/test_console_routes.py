@@ -150,3 +150,10 @@ def test_audit_endpoint(client):
     client.put("/api/console/risk_per_trade_pct", json={"value": 0.005, "reason": "cut"})
     rows = client.get("/api/console/audit?limit=5").json()["rows"]
     assert rows and rows[-1]["key"] == "risk_per_trade_pct"
+
+
+def test_reason_is_bounded(client):
+    r = client.put("/api/console/risk_per_trade_pct", json={"value": 0.005, "reason": "x" * 5000})
+    assert r.status_code == 200
+    rows = client.get("/api/console/audit?limit=1").json()["rows"]
+    assert len(rows[-1]["reason"]) == 500
