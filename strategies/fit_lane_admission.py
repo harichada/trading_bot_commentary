@@ -11,10 +11,22 @@ no way to put a *deliberately chosen* sleeve to work on the desk's own authority
     family:side[:regime1|regime2]          e.g. "mr_20d:long,mom_12_1:long:risk_on|mixed"
 
 An allowlisted (family, side) is admitted in a permitted regime *unless the pipeline measured
-that symbol's lane and failed it* — the allowlist is a statement about a strategy, never a
-licence to override evidence about a symbol. It also cannot make a family live: the family must
-still be in `FIT_LANE_LIVE_ENTRIES_ENABLED`, and an admitted entry still faces every downstream
-gate (desk limits, the playbook, the swing overnight gate, risk sizing and the allocation cap).
+that symbol's lane and it lost money* — the allowlist is a statement about a strategy (backed by
+the pooled family evidence), never a licence to override a measured verdict on a symbol. It also
+cannot make a family live: the family must still be in `FIT_LANE_LIVE_ENTRIES_ENABLED`, and an
+admitted entry still faces every downstream gate (desk limits, the playbook, the swing overnight
+gate, risk sizing and the allocation cap).
+
+Fix round 1 (2026-09-28): the blocking test is `symbol_check`, not the verdict. Every per-symbol
+row for the sleeve families is FAIL on the pipeline's *sample floors* (n >= 150 etc.) rather than
+on a negative edge, so verdict-based blocking would have admitted only the ~8% of symbols the
+pipeline had never measured at all. A row blocks only when it is both measured (n >= SYMBOL_MIN_N)
+and negative (exp_r < 0); absent and thin rows do not. The label is audited as
+`reasoning["fit_lane_symbol_check"]`.
+
+Also fix round 1: an allowlisted entry has no walk-forward score, so `entry_to_signal` gives it a
+neutral `FIT_LANE_ALLOWLIST_STRENGTH` (default 0.6) and `reasoning["sizing_basis"] =
+"risk_per_trade"` instead of letting a NaN score collapse it to the weakest Kelly tier.
 
 Default "" parses to no entries, which reduces `admit()` to exactly the old `live_eligible`
 rule, so the whole file is inert until the flag is set.
@@ -27,6 +39,7 @@ regime read is pure. Never imports `research`.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Tuple
 
@@ -37,9 +50,11 @@ from strategies.fit_lane_frames import _clamp, live_eligible
 logger = logging.getLogger("TradingBot")
 
 __all__ = [
-    "ADMIT_ALLOWLIST", "entry_to_signal", "ADMIT_PASS", "AllowEntry", "REGIMES", "SIDES", "admissible_sides",
-    "admit", "allowlist_permits", "allowlisted_sides", "normalize_regime", "parse_allowlist",
-    "read_live_regime", "safe_regime",
+    "ADMIT_ALLOWLIST", "ADMIT_PASS", "AllowEntry", "DEFAULT_ALLOWLIST_STRENGTH", "REGIMES",
+    "SIDES", "SYMBOL_ABSENT", "SYMBOL_BLOCKED", "SYMBOL_MIN_N", "SYMBOL_POSITIVE", "SYMBOL_THIN",
+    "admissible_sides", "admit", "allowlist_permits", "allowlist_strength", "allowlisted_sides",
+    "entry_to_signal", "normalize_regime", "parse_allowlist", "read_live_regime", "safe_regime",
+    "symbol_check",
 ]
 
 SIDES = ("long", "short")
@@ -52,8 +67,23 @@ REGIMES = ("risk_on", "risk_off", "mixed")
 ADMIT_PASS = "pass"              # the pre-existing rule: a walk-forward PASS row for that side
 ADMIT_ALLOWLIST = "allowlist"    # admitted by FIT_LANE_LIVE_ALLOWLIST on a non-FAIL row
 
-_FAIL_VERDICT = "FAIL"
 _ANY_REGIME: Tuple[str, ...] = ()
+
+# The per-symbol check (fix round 1). SYMBOL_MIN_N is the sample below which a row's exp_r is
+# noise rather than a measurement: the fit pipeline's own verdict floors sit far above it
+# (n >= 150), so "thin" covers every sleeve row today and the check only ever fires on a symbol
+# the pipeline really did measure and reject on edge.
+SYMBOL_MIN_N = 60
+SYMBOL_ABSENT = "absent"              # no row for this (symbol, family, side)
+SYMBOL_THIN = "thin"                  # a row, but n < SYMBOL_MIN_N or no usable exp_r
+SYMBOL_POSITIVE = "positive"          # measured, exp_r >= 0
+SYMBOL_BLOCKED = "blocked_negative"   # measured loser — the only label that refuses admission
+
+# Neutral strength for an allowlist-admitted signal; mirrors core/config.py's default so this
+# module still works when Config is unavailable (a test importing it in isolation).
+DEFAULT_ALLOWLIST_STRENGTH = 0.6
+SIZING_RISK_PER_TRADE = "risk_per_trade"
+SIZING_FIT_SCORE = "fit_score"
 
 
 @dataclass(frozen=True)
@@ -147,8 +177,26 @@ def allowlist_permits(allowlist: Iterable[AllowEntry], family: str, side: str, r
     return any(e.family == fam and e.side == sd and e.permits(regime) for e in allowlist or ())
 
 
-def _is_fail(row: Any) -> bool:
-    return row is not None and str(getattr(row, "verdict", "")).strip().upper() == _FAIL_VERDICT
+def symbol_check(row: Any) -> str:
+    """How the symbol's own unconditional row bears on an allowlisted lane.
+
+    `absent` (no row), `thin` (fewer than SYMBOL_MIN_N trades, or no usable exp_r — measured too
+    little to say anything), `positive` (measured, exp_r >= 0) or `blocked_negative` (measured and
+    losing). Only the last refuses admission; the first three carry the pooled family evidence.
+    """
+    if row is None:
+        return SYMBOL_ABSENT
+    try:
+        n = int(getattr(row, "n", 0) or 0)
+    except (TypeError, ValueError):
+        n = 0
+    try:
+        exp_r = float(getattr(row, "exp_r", float("nan")))
+    except (TypeError, ValueError):
+        exp_r = float("nan")
+    if n < SYMBOL_MIN_N or not math.isfinite(exp_r):
+        return SYMBOL_THIN
+    return SYMBOL_BLOCKED if exp_r < 0 else SYMBOL_POSITIVE
 
 
 def admit(row: Any, family: str, side: str, regime: Any,
@@ -157,15 +205,16 @@ def admit(row: Any, family: str, side: str, regime: Any,
 
     `ADMIT_PASS`      — the pre-existing rule: `row` is a walk-forward PASS for this side.
     `ADMIT_ALLOWLIST` — (family, side) is allowlisted, the regime is permitted, and the symbol's
-                        unconditional row is absent or is not FAIL.
+                        unconditional row is not a measured loser (`symbol_check`).
 
     `row` is the symbol's *unconditional* row for this lane (`StrategyFit.lookup`), which is the
-    row a FAIL has to come from: a regime-conditioned or pooled row is evidence about a regime or
-    about the universe, not the pipeline's verdict on this symbol's lane.
+    row a measured rejection has to come from: a regime-conditioned or pooled row is evidence
+    about a regime or about the universe, not the pipeline's measurement of this symbol's lane.
     """
     if live_eligible(row):
         return ADMIT_PASS
-    if allowlist_permits(allowlist, family, side, regime) and not _is_fail(row):
+    if (allowlist_permits(allowlist, family, side, regime)
+            and symbol_check(row) != SYMBOL_BLOCKED):
         return ADMIT_ALLOWLIST
     return None
 
@@ -223,17 +272,43 @@ def admissible_sides(family: str, live_families: Any, allowlist: Any) -> Tuple[s
 # ── the signal an admitted entry becomes ──
 
 
+def allowlist_strength() -> float:
+    """`Config().FIT_LANE_ALLOWLIST_STRENGTH`, or DEFAULT_ALLOWLIST_STRENGTH when it cannot be
+    read or is outside (0, 1]. Read per signal so the knob can be turned without a restart."""
+    try:
+        from core.config import Config
+        value = float(Config().FIT_LANE_ALLOWLIST_STRENGTH)
+        if 0.0 < value <= 1.0:
+            return value
+    except Exception:
+        logger.debug("fit_lane: FIT_LANE_ALLOWLIST_STRENGTH unreadable", exc_info=True)
+    return DEFAULT_ALLOWLIST_STRENGTH
+
+
 def entry_to_signal(entry: Entry, family: str, params: dict, verdict: str, score: float, symbol: str,
-                    admission: str = ADMIT_PASS, regime: Optional[str] = None) -> TradingSignal:
+                    admission: str = ADMIT_PASS, regime: Optional[str] = None,
+                    symbol_check_label: Optional[str] = None) -> TradingSignal:
     """`entry.symbol` falls back to "" when the family's make_entry() call
     didn't pass one explicitly (the common case) — `symbol` is the
     market-data symbol the adapter is actually evaluating, and always wins
     when entry.symbol is empty.
 
-    `admission` and `regime` (v-go-live-5k-2026-09-28) are audit fields: why this entry was
-    allowed to be live, and the regime it was admitted on — the latter under the key every
-    downstream gate already reads."""
-    strength = _clamp(float(score) * 2.0, 0.2, 1.0)
+    `admission`, `regime` and `symbol_check_label` (v-go-live-5k-2026-09-28) are audit fields:
+    why this entry was allowed to be live, the regime it was admitted on (under the key every
+    downstream gate already reads) and what the symbol's own fit row contributed.
+
+    Sizing basis (fix round 1): a `pass` admission still derives strength from the walk-forward
+    score, as before. An `allowlist` admission has no score to derive anything from — an absent
+    row's score is NaN, which `_clamp` floors at 0.2 and `risk/manager.py` then caps at Kelly
+    0.20, a score-shaped haircut on a signal with no score. Those carry the neutral
+    `allowlist_strength()` instead, so sizing is RISK_PER_TRADE_PCT of the (capped) balance
+    against the entry's own ATR stop."""
+    if admission == ADMIT_ALLOWLIST:
+        strength = _clamp(allowlist_strength(), 0.2, 1.0)
+        sizing_basis = SIZING_RISK_PER_TRADE
+    else:
+        strength = _clamp(float(score) * 2.0, 0.2, 1.0)
+        sizing_basis = SIZING_FIT_SCORE
     is_day_trade = entry.hold_kind == "intraday"
     reasoning = {
         "strategy": f"fit:{family}",
@@ -241,7 +316,9 @@ def entry_to_signal(entry: Entry, family: str, params: dict, verdict: str, score
         "fit_params": params,
         "fit_verdict": verdict,
         "fit_lane_admission": admission,
+        "fit_lane_symbol_check": symbol_check_label,
         "market_context_regime": regime,
+        "sizing_basis": sizing_basis,
         "hold_kind": entry.hold_kind,
         "entry_pattern": entry.tag,
         "max_hold_sessions": None if is_day_trade else entry.time_stop,

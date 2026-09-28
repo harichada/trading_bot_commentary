@@ -6,6 +6,15 @@ project's 400-line file budget. Everything here is pure: frames in,
 frames out, no I/O, no engine imports, no mutation of the caller's
 inputs. `strategies/fit_lane.py` re-exports these names, so
 `from strategies.fit_lane import with_synthetic_next_bar` still works.
+
+v-go-live-5k-2026-09-28 (Task 2) adds `align_context`, which maps the
+nightly universe-context slice onto a bar frame's session dates. Operational
+note: it carries a session's row forward at most `CTX_MAX_CARRY_SESSIONS`
+(3) business days, so if the nightly research refresh
+(`scripts/nightly_strategy_hunt.sh`) fails for more than three sessions the
+`ctx_*` columns go all-NaN and every factor/in-play family goes silent —
+by design (stand down rather than trade a stale cross-section), but it means
+a prolonged nightly outage shows up as fit lanes that stop signalling.
 """
 from __future__ import annotations
 

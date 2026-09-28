@@ -4553,6 +4553,33 @@ class Config:
             return tuple(str(v).strip() for v in raw if str(v).strip())
         return tuple(v.strip() for v in str(raw).split(',') if v.strip())
 
+    @property
+    def FIT_LANE_ALLOWLIST_STRENGTH(self) -> float:
+        """Signal strength/confidence an allowlist-admitted fit-lane entry carries.
+
+        An allowlisted entry has no walk-forward score behind it (for an unmeasured symbol the
+        fit row is absent and its score is NaN), so the score-derived Kelly haircut in
+        `risk/manager.py` would shrink it to the weakest tier — 0.2 strength, Kelly capped at
+        0.20 — for the wrong reason. This neutral value puts the sleeve on the risk-per-trade
+        path instead: RISK_PER_TRADE_PCT of the allocation against the entry's own ATR stop.
+
+        Default 0.6. Under the go-live values (allocation 5,000, risk 1%, buying-power pct 0.20)
+        a $100 stock with a 3% stop sizes to 8 shares / ~$800 at 0.6 ($24 = 0.48% of the
+        allocation at risk); 0.8 or more reaches the $1,000 buying-power cap at 10 shares.
+
+        Env `FIT_LANE_ALLOWLIST_STRENGTH` wins over yaml
+        `trading.fit_lane_allowlist_strength`. Only a value in (0, 1] is accepted; anything else
+        falls back to the default rather than sizing on a nonsense multiplier.
+        """
+        default = 0.6
+        env_val = os.getenv("FIT_LANE_ALLOWLIST_STRENGTH")
+        raw = env_val if env_val is not None else self.manager.get(
+            'trading.fit_lane_allowlist_strength', default)
+        parsed = _env_float(str(raw))
+        if parsed is None or not (0.0 < parsed <= 1.0):
+            return default
+        return parsed
+
 
 # Initialize configuration
 config = Config()

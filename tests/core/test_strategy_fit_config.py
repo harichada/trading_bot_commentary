@@ -1,7 +1,8 @@
 def _cfg(monkeypatch, **env):
     for k in ("ENABLE_STRATEGY_FIT_GATE", "STRATEGY_FIT_SHADOW", "STRATEGY_FIT_PATH", "STRATEGY_FIT_MAX_AGE_DAYS",
               "FIT_LANES_ENABLED", "FIT_LANE_LIVE_ENTRIES_ENABLED", "SWING_ALLOW_OVERNIGHT", "SWING_MAX_HOLD_SESSIONS",
-              "STRATEGY_HUNT_DATA_ROOT", "STRATEGY_FIT_REGIME_ROWS", "FIT_LANE_LIVE_ALLOWLIST"):
+              "STRATEGY_HUNT_DATA_ROOT", "STRATEGY_FIT_REGIME_ROWS", "FIT_LANE_LIVE_ALLOWLIST",
+              "FIT_LANE_ALLOWLIST_STRENGTH"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -66,3 +67,16 @@ def test_fit_lane_live_allowlist_parses_into_admission_entries(monkeypatch):
         AllowEntry("mr_20d", "long", ()),
         AllowEntry("mom_12_1", "long", ("risk_on", "mixed")),
     )
+
+
+def test_fit_lane_allowlist_strength_default_and_overrides(monkeypatch):
+    """v-go-live-5k-2026-09-28 (fix round 1): the neutral strength an allowlisted sleeve signal
+    carries so it sizes on the risk-per-trade path instead of a score-derived Kelly fraction."""
+    monkeypatch.delenv("FIT_LANE_ALLOWLIST_STRENGTH", raising=False)
+    c = _cfg(monkeypatch)
+    assert c.FIT_LANE_ALLOWLIST_STRENGTH == 0.6
+    assert _cfg(monkeypatch, FIT_LANE_ALLOWLIST_STRENGTH="0.75").FIT_LANE_ALLOWLIST_STRENGTH == 0.75
+    # Out of the (0, 1] range, or unusable, falls back to the default rather than sizing on a
+    # nonsense multiplier.
+    for bad in ("0", "-0.5", "1.4", "abc", "nan"):
+        assert _cfg(monkeypatch, FIT_LANE_ALLOWLIST_STRENGTH=bad).FIT_LANE_ALLOWLIST_STRENGTH == 0.6

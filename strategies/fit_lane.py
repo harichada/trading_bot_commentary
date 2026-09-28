@@ -32,14 +32,20 @@ v-strategy-fit-review2-2026-09-25 (whole-branch review fixes):
   Minor. `_clamp` and the best-row comparison both guard NaN.
 
 v-go-live-5k-2026-09-28 (Task 2): sleeve live admission and live context.
-  1. admission is "walk-forward PASS **or** allowlisted on a non-FAIL row" — the rule, the
-     `FIT_LANE_LIVE_ALLOWLIST` grammar and the regime read all live in
-     strategies/fit_lane_admission.py. The reason ("pass"/"allowlist") and the regime are
-     audited on the decision line and in the emitted `reasoning`.
+  1. admission is "walk-forward PASS **or** allowlisted and not a measured loser" — the rule,
+     the `FIT_LANE_LIVE_ALLOWLIST` grammar, the per-symbol check and the regime read all live in
+     strategies/fit_lane_admission.py. The reason ("pass"/"allowlist"), the regime and the
+     symbol check are audited on the decision line and in the emitted `reasoning`.
   2. `indicator_frame` finally gets a `context=` frame (the nightly universe-context slice for
      this symbol), without which every `ctx_*` column was absent and the factor/in-play
-     families could not fire live at all.
-Both are inert while `FIT_LANE_LIVE_ALLOWLIST` is "" and the context file is absent.
+     families could not fire live at all. The slice is carried at most
+     `CTX_MAX_CARRY_SESSIONS` (3) business days, so a nightly-refresh outage longer than that
+     silences the factor lanes rather than trading a stale cross-section.
+  3. (fix round 1) an allowlist-admitted signal carries the neutral
+     `FIT_LANE_ALLOWLIST_STRENGTH` so it sizes on the risk-per-trade path.
+1 and 3 are inert while `FIT_LANE_LIVE_ALLOWLIST` is "" (nothing is ever admitted that way);
+2 is live whenever the context file exists, and only changes what shadow entries get proposed
+until a lane is admitted.
 """
 from __future__ import annotations
 
@@ -84,6 +90,7 @@ from strategies.fit_lane_admission import (  # noqa: E402
     parse_allowlist,
     read_live_regime,
     safe_regime,
+    symbol_check,
 )
 from strategies.fit_lane_frames import (  # noqa: E402
     _FRESHNESS_LIMIT,
@@ -252,6 +259,10 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         try:
             ctx_slice = await asyncio.to_thread(self._context_source, symbol)
             context = align_context(ctx_slice, bars.index)
+            if context is not None:
+                logger.debug("fit_lane: context slice loaded symbol=%s rows=%d last=%s "
+                             "sessions=%d", symbol, len(ctx_slice), ctx_slice.index[-1].date(),
+                             len(context))
         except Exception as ctx_exc:
             logger.debug("fit_lane: context slice unavailable for %s: %s", symbol, ctx_exc)
 
@@ -301,6 +312,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
                 market_data, "shadow", "fit_lane_shadow_verdict",
                 fit_verdict=getattr(best_row, "verdict", ""),
                 fit_source=getattr(best_row, "source", ""),
+                fit_lane_symbol_check=symbol_check(best_row),
                 market_context_regime=regime,
                 would_entry_price=best_entry.entry_px,
                 would_stop_loss=best_entry.stop_px,
@@ -310,13 +322,15 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
 
         live_entry, live_row = self._best_of(live_kept, rows_by_side)
         admission = admission_by_side[live_entry.side]
+        check = symbol_check(live_row)
         action = "signal_buy" if live_entry.side == "long" else "signal_sell"
         self._log_decision(market_data, action, "fit_lane_live",
                            fit_lane_admission=admission, market_context_regime=regime,
+                           fit_lane_symbol_check=check,
                            fit_verdict=getattr(live_row, "verdict", ""))
         return entry_to_signal(live_entry, family, params, str(getattr(live_row, "verdict", "")),
                                getattr(live_row, "score", float("nan")), symbol,
-                               admission=admission, regime=regime)
+                               admission=admission, regime=regime, symbol_check_label=check)
 
     def _admissible_sides(self) -> Tuple[str, ...]:
         """Sides the allowlist may admit for this family — () while the flag is "" or the family

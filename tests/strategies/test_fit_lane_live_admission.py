@@ -28,8 +28,11 @@ class _Fit:
 
 
 class _Row:
-    def __init__(self, verdict, score=0.4, source="walkforward"):
+    """n/exp_r default to a thin (unmeasurable) sample, which never blocks — fix round 1."""
+
+    def __init__(self, verdict, score=0.4, source="walkforward", n=10, exp_r=0.0):
         self.verdict, self.score, self.source = verdict, score, source
+        self.n, self.exp_r = n, exp_r
 
 
 def _bars(n_sessions=3):
@@ -114,12 +117,44 @@ def test_allowlisted_watch_row_goes_live(monkeypatch, tmp_path, caplog):
     assert len(_ledger(tmp_path)) == 1          # the shadow evidence keeps accumulating
 
 
-def test_allowlisted_fail_row_stays_shadow(monkeypatch, tmp_path, caplog):
-    lane = _lane(monkeypatch, tmp_path, {("NVDA", "toy", "long"): _Row("FAIL")},
+def test_allowlisted_measured_loser_stays_shadow(monkeypatch, tmp_path, caplog):
+    """Fix round 1: only a *measured* loser (n >= 60, exp_r < 0) blocks an allowlisted lane."""
+    lane = _lane(monkeypatch, tmp_path,
+                 {("NVDA", "toy", "long"): _Row("FAIL", n=150, exp_r=-0.08)},
                  allowlist="toy:long")
     with caplog.at_level("INFO", logger="TradingBot"):
         assert asyncio.run(lane.generate_signal_with_commentary(_md())) is None
     assert "reason=fit_lane_shadow_verdict" in caplog.text
+    assert "fit_lane_symbol_check=blocked_negative" in caplog.text
+
+
+def test_allowlisted_thin_fail_row_goes_live(monkeypatch, tmp_path):
+    """The sleeve's actual situation: every mr_20d/mom_12_1 row is FAIL on the sample floor
+    (n < 60), so the lane must trade it on the pooled family evidence."""
+    lane = _lane(monkeypatch, tmp_path,
+                 {("NVDA", "toy", "long"): _Row("FAIL", n=12, exp_r=-0.4)},
+                 allowlist="toy:long")
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None and sig.reasoning["fit_lane_admission"] == "allowlist"
+    assert sig.reasoning["fit_lane_symbol_check"] == "thin"
+
+
+def test_admitted_signal_records_the_symbol_check_and_neutral_sizing(monkeypatch, tmp_path):
+    lane = _lane(monkeypatch, tmp_path, {}, allowlist="toy:long")
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None
+    assert sig.reasoning["fit_lane_symbol_check"] == "absent"
+    assert sig.reasoning["sizing_basis"] == "risk_per_trade"
+    assert sig.strength == 0.6 and sig.confidence == 0.6
+
+
+def test_pass_row_keeps_its_score_based_sizing(monkeypatch, tmp_path):
+    lane = _lane(monkeypatch, tmp_path,
+                 {("NVDA", "toy", "long"): _Row("PASS", 0.4, n=200, exp_r=0.3)}, allowlist="")
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None and sig.reasoning["sizing_basis"] == "fit_score"
+    assert sig.strength == pytest.approx(0.8)
+    assert sig.reasoning["fit_lane_symbol_check"] == "positive"
 
 
 def test_allowlisted_wrong_regime_stays_shadow(monkeypatch, tmp_path, caplog):
