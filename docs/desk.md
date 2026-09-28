@@ -2,12 +2,16 @@
 
 Playbook Desk B2 (2026-09-25). Gives the bot a human trader's daily routine —
 a pre-market plan, a 09:35 in-play stock ranking, an adaptive playbook keyed
-per `(family, side, regime)`, and a post-close journal — all running
-**shadow-only** today: audited, never blocking, never sizing a live order.
-See the plan header for the architecture summary:
-`docs/superpowers/plans/2026-09-25-playbook-desk-b2.md`. Research status and
-why the desk stays shadow-only are under "How a lane would be promoted from
-shadow" § "Today: NO-GO" below.
+per `(family, side, regime)`, and a post-close journal. Originally
+shadow-only (audited, never blocking, never sizing a live order); as of the
+2026-09-28 go-live restart `ENABLE_DESK_LIMITS=1` and `ENABLE_PLAYBOOK_GATE=1`
+in `.env` make the `desk_limit` and `playbook` router hooks **enforcing** —
+see "The four flags" § "Go-live note" below for exactly what that means and
+does not mean. See the plan header for the architecture summary:
+`docs/superpowers/plans/2026-09-25-playbook-desk-b2.md`. Research status —
+why no lane has a walk-forward PASS yet, which is a separate question from
+whether the desk's own gates enforce — is under "How a lane would be
+promoted from shadow" § "Today: NO-GO" below.
 
 ## What it does, in human terms
 
@@ -451,11 +455,18 @@ Carried over from `.superpowers/sdd/2026-09-25-playbook-desk-b2/task-5-report.md
   `new_highs`/`new_lows`); each is mapped to a 0–1 scale by
   `core/loops/desk_steps.py::breadth_score`, most-direct reading first. Only
   the plan's `long_ok`/`short_ok` thresholds (0.40 / 0.60) consume it.
-- **No lane goes live from any of this today.** `ENABLE_DESK_LIMITS` and
-  `ENABLE_PLAYBOOK_GATE` govern signals that already exist; they do not
-  create new order paths, and neither has been turned on in the live
-  deployment (see Task 8 / `docs/BOT_OPERATIONS_MANUAL.md` § "Desk
-  (shadow)").
+- **Neither flag creates a new order path.** `ENABLE_DESK_LIMITS` and
+  `ENABLE_PLAYBOOK_GATE` only govern signals that already exist (block or
+  resize them); which strategies may emit a live signal at all is still
+  decided by each lane's own `*_LIVE_ENTRIES_ENABLED` flag and, for the fit
+  lanes, `FIT_LANE_LIVE_ENTRIES_ENABLED`/`FIT_LANE_LIVE_ALLOWLIST`. Both
+  `ENABLE_DESK_LIMITS` and `ENABLE_PLAYBOOK_GATE` **are** on in the live
+  deployment as of the 2026-09-28 go-live restart (see "The four flags"
+  above) — as of 13:17 ET the same day they are also governing the four
+  intraday builtin lanes (`day_trade_momentum`, `day_trade_momentum_short`,
+  `mean_reversion`, `orb_contraction_rvol`), not just the `mr_20d`/`mom_12_1`
+  sleeve; see `docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the
+  sleeve lanes".
 - **The plan's `strategies/fit_lane.py::LANE_MAP` citation does not match
   the code** (`docs/superpowers/plans/2026-09-25-playbook-desk-b2.md`,
   Global Constraints: "Family naming: `strategies/fit_lane.py::LANE_MAP`
@@ -471,7 +482,17 @@ Carried over from `.superpowers/sdd/2026-09-25-playbook-desk-b2/task-5-report.md
 ## Day-one checklist (go-live, 2026-09-28)
 
 Before the first live session with `ENABLE_DESK_LIMITS=1` /
-`ENABLE_PLAYBOOK_GATE=1` enforcing:
+`ENABLE_PLAYBOOK_GATE=1` enforcing. **Update, 13:17 ET the same day:** the
+four intraday builtin lanes (`ORB_LIVE_ENTRIES_ENABLED`,
+`MEAN_REV_LIVE_ENTRIES_ENABLED`, `DAY_TRADE_LIVE_ENTRIES_ENABLED`,
+`DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED`) were also switched on, so both
+enforcing flags now govern those signals too — `dt_momentum|long` is
+suspended (`size_mult` 0.0, every entry skipped) and `mean_rev_intraday|long`
+is on probation (`size_mult` 0.5) per `data/desk/playbook.json`; the
+day-trade lanes are also still bound by their own `DAY_TRADE_FLATTEN_HOUR`
+(default `15`, i.e. 3 PM ET) entry cutoff regardless of the playbook. See
+`docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the sleeve lanes" for
+the full accounting:
 
 1. **`ENABLE_DESK=1` is set.** Both enforcing sub-flags are inert without it
    (see "The four flags" above). Confirm with `GET /api/desk/plan` returning a

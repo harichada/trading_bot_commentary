@@ -53,10 +53,26 @@
   `docs/research/strategy_hunt.md` § "Scheduling" and § "Universe context".
 - **Go-live executed.** Live since 11:52 ET (after-close gate lifted at the
   user's request; no bot-managed positions open at the time). Restarted again
-  13:13 ET onto `d66380d` once the engine-wedge fix below cleared review; pid
-  1300568, live mode, sleeve lanes `live=True`, allocation active, watchdog
+  13:13 ET onto `d66380d` once the engine-wedge fix below cleared review;
+  live mode, sleeve lanes `live=True`, allocation active, watchdog
   health ok. Backups: `.env.bak_pre_golive_20260928`,
   `Config().yaml.bak_pre_golive_20260928`.
+- **Intraday builtin lanes taken live.** 13:17 ET, at the user's request:
+  `ORB_LIVE_ENTRIES_ENABLED=1`, `MEAN_REV_LIVE_ENTRIES_ENABLED=1`,
+  `DAY_TRADE_LIVE_ENTRIES_ENABLED=true`, `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1`
+  set in `.env` (backup `.env.bak_pre_intraday_20260928`), bot restarted onto
+  the same `d66380d` build, pid `1301804`. This is a separate switch from the
+  `mr_20d`/`mom_12_1` fit-lane sleeve above — it takes the builtin
+  `day_trade_momentum`, `day_trade_momentum_short`, `mean_reversion`, and
+  `orb_contraction_rvol` strategies off their LIVE pause. The playbook gate
+  (`ENABLE_PLAYBOOK_GATE=1`, already on) is the brake: `data/desk/playbook.json`
+  has `dt_momentum|long|unknown` **suspended** (every day-trade-momentum long
+  entry skipped) and `mean_rev_intraday|long|unknown` on **probation**
+  (`size_mult` 0.5); day-trade-momentum short and ORB have no playbook entry
+  yet and trade at full size once their own gates clear. The day-trade lanes'
+  own `DAY_TRADE_FLATTEN_HOUR` (default `15`, i.e. 3 PM ET) entry cutoff is
+  unchanged. Docs: `docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the
+  sleeve lanes" (update note), `docs/desk.md` (day-one checklist).
 - **Losing-day streak reset.** `DESK_STREAK_SINCE=2026-09-28` (commit
   `bd54992`) floors the desk's `two_losing_days` sit-out lookback at go-live
   day, at the user's request — sessions before it never count toward the

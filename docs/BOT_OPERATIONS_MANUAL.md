@@ -191,12 +191,12 @@ Registration order is fixed in `engine.py:311-383`: Breakout, mean-reversion (le
 |---|---|---|---|---|---|
 | `breakout` (`builtin.py:157`) | long (+short mirror) | **OFF** (returns None at `:173`) | `ENABLE_BREAKOUT_LONG` False; `ENABLE_SHORT_MIRRORS` False | close > high_20 x 1.003, ADX >= 25, close >= SMA20, vol_ratio >= 2.0, direction >= 3 & phase early/middle, context allows_long | 1.5 x ATR; smart target else 2R |
 | `momentum` (`builtin.py:1253`) | long (+short) | **OFF** (not registered; also gated) | env `ENABLE_MOMENTUM`; `ENABLE_MOMENTUM_LONG` False | MACD > signal, RSI 55-65, ADX > 25, close > SMA50 | 1.5 x ATR / 3 x ATR |
-| `mean_reversion` legacy (`builtin.py:551`) | long; short shadow | **Signals; LIVE entries paused** | `USE_OVERSOLD_BOUNCE_V2` False selects it; yaml `mean_rev_live_entries_enabled: false`; `ENABLE_MEAN_REV_SHORT` False, yaml `enable_mean_rev_short_shadow: true` | see 2.4.1 | 2.5 x ATR (`MEAN_REV_ATR_STOP_MULTIPLIER`); smart target else 2R |
+| `mean_reversion` legacy (`builtin.py:551`) | long; short shadow | **LIVE long, playbook probation 0.5x**; short shadow | `USE_OVERSOLD_BOUNCE_V2` False selects it; env `MEAN_REV_LIVE_ENTRIES_ENABLED=1` (2026-09-28 13:17 ET, §9); playbook `mean_rev_intraday\|long` on probation (`size_mult` 0.5, §9); `ENABLE_MEAN_REV_SHORT` False, yaml `enable_mean_rev_short_shadow: true` | see 2.4.1 | 2.5 x ATR (`MEAN_REV_ATR_STOP_MULTIPLIER`); smart target else 2R |
 | `oversold_bounce_v2` (`oversold_bounce_v2.py`) | long | **OFF** | `USE_OVERSOLD_BOUNCE_V2` False (`config.py:2024`) | RSI < 30 & close < BB lower, vol_ratio > 2, hammer/reclaim bar, swing low within 0.5 ATR, SPY slope > -0.10%, no fresh negative news | max(2 x ATR, 0.5 x bar range); 3R; hints scale-out 0.5R, BE at 1.5 ATR, 30-min time stop |
 | `news` FreeNews (`news_strategy.py:404`) | long & short | **LIVE** | always registered; `ENABLE_NEWS_VERIFIER` False (advisory), `ENABLE_NEWS_TECHNICAL_CONFIRMATION` True | see 2.4.2 | 1.5 x ATR; BUY smart target else 2R; SELL 2R |
-| `day_trade_momentum` (`builtin.py:1435`) | long | **Signals; LIVE entries paused** (shadow/sim) | `ENABLE_DAY_TRADE_MOMENTUM` True; yaml `day_trade_live_entries_enabled: false` (`engine.py:6688`) | see 2.4.3 | 1.5 x ATR; 2R (hard-coded `:2537-2541`) |
-| `day_trade_momentum_short` (`builtin.py:2653`) | short | **SHADOW** (ledger only) | `ENABLE_DAY_TRADE_SHORT` True; `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED` False; `ENABLE_DAY_TRADE_SHORT_SHADOW` True | see 2.4.4 | 1.5 x ATR above; 2R below |
-| `orb_contraction_rvol` (`builtin.py:3211`) | long & short | **OFF** (not registered) | `ENABLE_ORB_STRATEGY` False (`config.py:3478`); yaml `orb_live_entries_enabled: false` | 15-60 min after open, contraction >= 20%, RVOL >= 1.2, close beyond opening range, hard skip risk_off | 1.0 x ATR capped at range edge +/- 0.5 ATR; 2R; size 0.5x |
+| `day_trade_momentum` (`builtin.py:1435`) | long | **Signals; entries flag on but playbook-suspended** | `ENABLE_DAY_TRADE_MOMENTUM` True; env `DAY_TRADE_LIVE_ENTRIES_ENABLED=true` (2026-09-28 13:17 ET, §9); playbook `dt_momentum\|long` **suspended** (`size_mult` 0.0, §9) — every entry is skipped regardless of the env flag | see 2.4.3 | 1.5 x ATR; 2R (hard-coded `:2537-2541`) |
+| `day_trade_momentum_short` (`builtin.py:2653`) | short | **LIVE** (full size; no playbook entry yet) | `ENABLE_DAY_TRADE_SHORT` True; env `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1` (2026-09-28 13:17 ET, §9); `ENABLE_DAY_TRADE_SHORT_SHADOW` True (shadow ledger still written alongside live orders) | see 2.4.4 | 1.5 x ATR above; 2R below |
+| `orb_contraction_rvol` (`builtin.py:3211`) | long & short | **LIVE** (full size; no playbook entry yet) | `ENABLE_ORB_STRATEGY=1` (`config.py:3478`); env `ORB_LIVE_ENTRIES_ENABLED=1` (2026-09-28 13:17 ET, §9) | 15-60 min after open, contraction >= 20%, RVOL >= 1.2, close beyond opening range, hard skip risk_off | 1.0 x ATR capped at range edge +/- 0.5 ATR; 2R; size 0.5x |
 | `NewsSignalStrategy` (`builtin.py:92`) | either | **Dead code** | never instantiated | |avg VADER| > 0.3 | 1.5 x ATR; 2R |
 | `fit:<family>` (`strategies/fit_lane.py`) | per family (`strategies/families/registry.py:FAMILIES`) | **SHADOW** unless family listed in `FIT_LANE_LIVE_ENTRIES_ENABLED` | `FIT_LANES_ENABLED` (registers the adapter); `FIT_LANE_LIVE_ENTRIES_ENABLED` (LIVE entries); `SWING_ALLOW_OVERNIGHT` (multiday families held across sessions) | family rules from `strategies/families` with per-symbol params from the fit table (`data/strategy_hunt/fit/strategy_fit.json`) | stop/target set by the family's own grid (see `research/strategy_hunt/promote.py`, `research/strategy_hunt/cli.py promote`) |
 
@@ -212,13 +212,13 @@ Per-symbol 20-min cooldown (`:489`). Reads bus items up to 4 h old, falling back
 Context (`:1503-1630`): hard block if SPY <= -1.5% and VIX >= +15%; **hard skip in risk_off** (`DAY_TRADE_HARD_SKIP_RISK_OFF` True, else 0.25x); opening_30 -> size 0.5x; off_hours hard skip. RS vs SPY (same-basis via Schwab quote, `ENABLE_SAME_BASIS_RS` True) must be >= `MOMENTUM_MIN_RS_VS_SPY` 0.5 pp, or >= `PINNED_MIN_RS_VS_SPY` 0.25 for pinned names; vol_ratio >= 1.5. Patterns (`:1720-1745`): **breakout** (close > high_20, ADX > 20, < 3% above), **pullback** (RSI 40-60, within 2% of SMA20, MACD > signal), **continuation** (RSI 55-75, ADX > 25, MACD > signal, close > SMA20). Hard vetoes: continuation or breakout with RSI >= 70 (`ENABLE_HARD_VETO_*_RSI70` True, `:2140-2240`). Shadow-only gates logged to `data/shadow_*.ndjson`: `DT_OPEN30_CONT_INDEX_CONFIRM`, `DT_OPEN30_CONT_RS_FROM_OPEN`, `DT_INMOVE_INDEX_TURN` (yaml: measure on, `*_LIVE_ENFORCE` false). `reasoning` carries `is_day_trade`, `day_trade_size_multiplier` 0.5, `flatten_hour` 15, `mc_size_mult`, `entry_pattern`, `session_id`. Engine LIVE-only gates: flatten-hour entry block from 15:00 ET, RSI <= 50 block, RSI >= 70 veto on breakout/continuation (`engine.py:6740-6900`), late-entry gate in shadow (`ENABLE_LATE_ENTRY_GATE` / `LATE_ENTRY_GATE_SHADOW` True).
 
 #### 2.4.4 Day-trade momentum short (`builtin.py:2685-3190`)
-Skips `HANDS_OFF_DENYLIST` (`MU HQGE SPCX`); **hard block in risk_on**; off_hours skip; direction `allows_short_entry` and phase != exhausted; symbol must underperform SPY by >= 0.5 pp (`DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY`); vol_ratio >= 1.5; RSI within 30-85 (no shorting oversold or parabolic). Patterns: **breakdown** (close < low_20, ADX > 20, < 3% below), **continuation_down** (RSI 30-50, close < SMA20, MACD < signal), **rejection** (within 2% of high_20, MACD < signal, ADX > 20). Flatten-hour block >= 15:00 ET. Because LIVE is off it writes `data/day_trade_short_shadow.ndjson` (same 10:00-16:00 / 30-min throttle) and returns None (`:2997-3100`). `DAY_TRADE_SHORT_MAX_CONCURRENT` 2 applies if ever live.
+Skips `HANDS_OFF_DENYLIST` (`MU HQGE SPCX`); **hard block in risk_on**; off_hours skip; direction `allows_short_entry` and phase != exhausted; symbol must underperform SPY by >= 0.5 pp (`DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY`); vol_ratio >= 1.5; RSI within 30-85 (no shorting oversold or parabolic). Patterns: **breakdown** (close < low_20, ADX > 20, < 3% below), **continuation_down** (RSI 30-50, close < SMA20, MACD < signal), **rejection** (within 2% of high_20, MACD < signal, ADX > 20). Flatten-hour block >= 15:00 ET. With `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1` (§9) it now takes the LIVE path and emits a real signal instead of writing `data/day_trade_short_shadow.ndjson`; that shadow write (same 10:00-16:00 / 30-min throttle) only fires when the LIVE flag is off (`:2997-3100`). `DAY_TRADE_SHORT_MAX_CONCURRENT` 2 applies.
 
 ### 2.5 How signals are combined
 
 There is no consensus vote and no first-wins short-circuit. For each watchlist symbol the analysis loop runs an optional ML prediction (`ML_PREDICTION_ENABLED` True, 4 s timeout, used downstream as `ml_signal`) and then calls **every** registered strategy in order (`engine.py:5793-5806`); each non-None signal is passed independently to `_process_signal_with_commentary` along with the ML output. Duplicate exposure is prevented structurally: held symbols are removed from the scan, and the router's own gates (LIVE pause flags, regime gate, econ blackout soft veto, max positions, mean-rev risk budget at `engine.py:7376+`, correlation guard) decide acceptance. `primary_strategy` is not an engine priority setting; it is the attribute of the optional `MetaInference` shadow model (`engine.py:275`, `:5833`) that limits meta-scoring to signals whose `reasoning['strategy']` starts with that name, and it is disabled when `ml_meta_model.pkl` is absent. Regime-allocator and conviction-sizer shadows write `regime_allocator_shadow.ndjson` / `conviction_sizer_shadow.ndjson` for every routed signal without affecting it (except the mean-rev regime gate noted above).
 
-**Net effect today:** the only lane that can open a new LIVE position is the free-news strategy (long or short). Mean-reversion and day-trade momentum long produce signals, commentary, and shadow ledgers but are LIVE-paused by yaml; day-trade short is shadow-only; breakout, momentum, oversold-v2, and ORB are off.
+**Net effect today (updated 2026-09-28 13:17 ET, §9):** free-news (long or short), mean-reversion long (playbook probation, 0.5x size), day-trade momentum short, and ORB (long & short) can all open new LIVE positions; day-trade momentum long produces signals but is playbook-suspended (every entry skipped, `size_mult` 0.0) even though its own `*_LIVE_ENTRIES_ENABLED` flag is now on; breakout, momentum, and oversold-v2 remain off.
 
 ## 3. From signal to order to exit
 
@@ -248,12 +248,12 @@ Every gate below emits a structured line through `_audit` (`engine.py:767`): `en
 | 10 | `early_session skip first_5min_hard_block` | 09:30–09:34 ET, no bypass | hard-coded | — | 6539 |
 | 11 | `late_entry skip after_entry_cutoff` | ET ≥ 15:30 and < 16:00 | `LATE_ENTRY_CUTOFF_HOUR/MINUTE` (15:30) | — | 6573 |
 | 12 | `late_entry_gate shadow/skip` | BUY on day_trade_momentum / mean_reversion(_short) / orb; extension ≥ 0.75, price > VWAP + 1.0×ATR, or ≥ 5 bars since impulse | `ENABLE_LATE_ENTRY_GATE` (True), `LATE_ENTRY_GATE_SHADOW` (True) | **shadow today** — logs, does not block | 6640 |
-| 13 | `daytrade_live_pause skip live_entries_disabled` | LIVE + day_trade_momentum | `DAY_TRADE_LIVE_ENTRIES_ENABLED` (False) | LIVE day-trade entries are currently off | 6692 |
+| 13 | `daytrade_live_pause skip live_entries_disabled` | LIVE + day_trade_momentum | `DAY_TRADE_LIVE_ENTRIES_ENABLED` (env `true` since 2026-09-28 13:17 ET → this gate now passes) | this gate no longer blocks day-trade long, but the earlier `playbook` gate (§9, between gate #1 and #2 above) skips every `dt_momentum\|long` entry first (`playbook_suspended`) — the signal never reaches gate 13 today | 7258 |
 | 14 | `daytrade_flatten_hour_gate skip` | LIVE + `is_day_trade` + ET hour ≥ flatten hour | `DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED` (True), hour 15 | fail-open on exception | 6750 |
 | 15 | `daytrade_rsi_entry_gate skip rsi_below_50_entry_blocked` | LIVE + day-trade BUY + RSI ≤ 50 | `DAY_TRADE_RSI_ENTRY_GATE_ENABLED` (True) | fail-open | 6814 |
 | 16 | `daytrade_rsi_high_entry_veto skip` | LIVE + day-trade BUY + breakout/continuation + RSI ≥ 70 | `DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED` (True) | fail-open | 6879 |
-| 17 | `meanrev_live_pause skip` | LIVE + mean_reversion(_short) | `MEAN_REV_LIVE_ENTRIES_ENABLED` (default True; env `0` and yaml `false` today → **blocking**) | — | 6937 |
-| 18 | `orb_live_pause skip` | LIVE + orb_contraction_rvol | `ORB_LIVE_ENTRIES_ENABLED` (False) | — | 6985 |
+| 17 | `meanrev_live_pause skip` | LIVE + mean_reversion(_short) | `MEAN_REV_LIVE_ENTRIES_ENABLED` (env `1` since 2026-09-28 13:17 ET → gate passes; upstream `playbook` gate applies `mean_rev_intraday\|long` probation `size_mult` 0.5 first, §9, but does not skip) | — | 7503 |
+| 18 | `orb_live_pause skip` | LIVE + orb_contraction_rvol | `ORB_LIVE_ENTRIES_ENABLED` (env `1` since 2026-09-28 13:17 ET → gate passes; no playbook entry for `orb`, so ungoverned/full size) | — | 7551 |
 | 19 | `signal_router skip existing_schwab_position` | LIVE; `get_schwab_positions()` already holds symbol → registers it as `managed_by_bot=False` and skips | — | — | 7067 |
 | 20 | `signal_router skip already_tracking` | symbol in `positions` or `simulated_positions` | — | — | 7083 |
 | 21 | `signal_router skip anti_pyramid_pending_order_for_symbol` | any `pending_orders` entry for the symbol | — | — | 7100 |
@@ -275,7 +275,7 @@ Every gate below emits a structured line through `_audit` (`engine.py:767`): `en
 | 37 | `signal_router accepted` (+ `rr_audit_low` warning if R:R < 1.8) | — | — | — | 7896 |
 | 38 | Sim: `_validate_oco_prices` → `reject_oco_invalid_sim`; LIVE: `_execute_real_trade` | — | — | — | 7949 / 7985 |
 
-Net effect today in LIVE: day-trade momentum, mean-reversion and ORB entries are all paused by flag (gates 13, 17 and 18). The free-news lane has no pause flag and is the only lane that can reach the sizing step, and it has produced no live signals in the logged sessions. When mean-reversion is re-enabled it must pass the regime, conviction, quality, risk-off, dedupe and budget gates.
+Net effect today in LIVE (updated 2026-09-28 13:17 ET, §9): gates 13, 17 and 18 no longer block — `DAY_TRADE_LIVE_ENTRIES_ENABLED`, `MEAN_REV_LIVE_ENTRIES_ENABLED`, and `ORB_LIVE_ENTRIES_ENABLED` are all on in `.env`. The playbook gate (upstream of these, between gate #1 and #2) is now the brake for two of them: it suspends every `dt_momentum|long` entry outright (day-trade momentum long effectively still cannot open a position) and halves `mean_rev_intraday|long` size via probation; day-trade momentum short and ORB have no playbook entry yet and trade at full size once they clear their own gates. Free-news remains ungated by any pause flag. Mean-reversion long must additionally pass the regime, conviction, quality, risk-off, dedupe and budget gates upstream.
 
 #### Strategy fit gate
 
@@ -671,12 +671,12 @@ Selected flags (default = code default; current = yaml or `.env` if set):
 | Orders | `HANDS_OFF_DENYLIST` :1818 | trading.hands_off_denylist | MU, HQGE, SPCX | default |
 | Strategies | `ENABLE_BREAKOUT_LONG` :1964, `ENABLE_MOMENTUM_LONG` :1976 | trading.* | False | default |
 | Strategies | `ENABLE_MEAN_REV_SHORT` :1358 / `_SHADOW` :1411 | trading.* | False / False | default / **true** |
-| Strategies | `MEAN_REV_LIVE_ENTRIES_ENABLED` :2190 | env/yaml | True | **0 (paused)** |
-| Strategies | `ENABLE_ORB_STRATEGY` :3478, `ORB_LIVE_ENTRIES_ENABLED` :3501, `ORB_SIM_SHADOW_ENABLED` :3520 | env/yaml | False, False, True | 1, 0, 1 |
+| Strategies | `MEAN_REV_LIVE_ENTRIES_ENABLED` :2190 | env/yaml | True | **1** (live since 2026-09-28 13:17 ET; `mean_rev_intraday\|long` playbook probation 0.5x, §9) |
+| Strategies | `ENABLE_ORB_STRATEGY` :3478, `ORB_LIVE_ENTRIES_ENABLED` :3501, `ORB_SIM_SHADOW_ENABLED` :3520 | env/yaml | False, False, True | 1, **1** (live since 2026-09-28 13:17 ET, §9), 1 |
 | Strategies | `ENABLE_PINNED_WATCHLIST` :800, `PINNED_WATCHLIST` :826 | env/yaml | True, built-in list | 1, NVDA…AMD |
 | Day-trade | `ENABLE_DAY_TRADE_MOMENTUM` :2140 | env/yaml | True | default |
-| Day-trade | `DAY_TRADE_LIVE_ENTRIES_ENABLED` :2159 | env/yaml | False | **false** (yaml + env) |
-| Day-trade | `ENABLE_DAY_TRADE_SHORT` :2387 / `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED` :2412 / `_SHADOW` :2443 | env/yaml | True / False / True | default / 0 / 1 |
+| Day-trade | `DAY_TRADE_LIVE_ENTRIES_ENABLED` :2159 | env/yaml | False | **true** (env, live since 2026-09-28 13:17 ET; `dt_momentum\|long` playbook-suspended, §9) |
+| Day-trade | `ENABLE_DAY_TRADE_SHORT` :2387 / `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED` :2412 / `_SHADOW` :2443 | env/yaml | True / False / True | default / **1** (live since 2026-09-28 13:17 ET, §9) / 1 |
 | Day-trade | `DT_OPEN30_CONT_INDEX_CONFIRM` :2908, `DT_OPEN30_CONT_RS_FROM_OPEN` :2988, `DT_INMOVE_INDEX_TURN` :3058 (+ `_LIVE_ENFORCE`) | env/yaml | False | measure=1, enforce=0 (PR102/103 shadow) |
 | Day-trade | `DAY_TRADE_FLATTEN_HOUR` :2699, `LATE_ENTRY_CUTOFF_HOUR/MINUTE` :1061 | trading.* | 15, 15:30 | default |
 | Day-trade | `ENABLE_LATE_ENTRY_GATE` :2537 / `LATE_ENTRY_GATE_SHADOW` :2560 | env/yaml | True / True | 1 / **0 (enforcing)** |
@@ -1043,13 +1043,34 @@ Common `component` values: `signal_router`, `regime_gate`, `conviction_floor`, `
 
 On 2026-09-28 the operator directed the bot to trade a hard $5,000 slice of the
 ~$46.5k margin account, funded by margin (no positions sold), running the slow
-long-only sleeve (`mr_20d` long, `mom_12_1` long) live while every other lane
-stays shadow. This section documents that configuration as built in
-`core/config.py` § `v-go-live-5k-2026-09-28`, `risk/allocation.py`,
-`risk/manager.py`, and `strategies/fit_lane_admission.py`. Implementation
-detail and the arithmetic behind every number here is in
+long-only sleeve (`mr_20d` long, `mom_12_1` long) live. This section documents
+that configuration as built in `core/config.py` § `v-go-live-5k-2026-09-28`,
+`risk/allocation.py`, `risk/manager.py`, and `strategies/fit_lane_admission.py`.
+Implementation detail and the arithmetic behind every number here is in
 `.superpowers/sdd/2026-09-28-go-live-5k/task-1-report.md` and
 `task-2-report.md`.
+
+**Update, 13:17 ET the same day:** the operator also flipped the four intraday
+builtin lanes' `*_LIVE_ENTRIES_ENABLED` flags on in `.env`
+(`ORB_LIVE_ENTRIES_ENABLED=1`, `MEAN_REV_LIVE_ENTRIES_ENABLED=1`,
+`DAY_TRADE_LIVE_ENTRIES_ENABLED=true`, `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1`;
+see 9.3). These are the `day_trade_momentum`, `day_trade_momentum_short`,
+`mean_reversion`, and `orb_contraction_rvol` strategies in section 2.4 — a
+separate lane family from the `fit:mr_20d`/`fit:mom_12_1` sleeve this section
+otherwise describes. The flag flip does not mean every one of those lanes
+trades at full size: `ENABLE_PLAYBOOK_GATE=1` (§9.1 above, §9.5 below) is the
+brake. As of this go-live, `data/desk/playbook.json` carries
+`dt_momentum|long|unknown` **suspended** (`size_mult` 0.0 — every
+`day_trade_momentum` long entry is skipped regardless of the env flag) and
+`mean_rev_intraday|long|unknown` on **probation** (`size_mult` 0.5 — every
+`mean_reversion` long entry that would otherwise fire is halved). Both map via
+`LANE_MAP` in `core/strategy_fit_gate.py` (§2.4, §3.2 gate #12's neighbourhood).
+`day_trade_momentum_short` (`dt_momentum|short`) and `orb_contraction_rvol`
+(`orb|*`) have no playbook entry yet, so they are ungoverned and trade at full
+size once their own gates clear. The day-trade lane's own flatten-hour rule
+(`DAY_TRADE_FLATTEN_HOUR`, default `15` i.e. 3 PM ET, `core/config.py:2761`)
+is unchanged and still force-flattens/blocks new day-trade entries from that
+hour on, independent of the playbook.
 
 ### 9.1 What the $5,000 allocation means
 
@@ -1179,9 +1200,10 @@ so it does not double-govern the same entries with a stricter, PASS-only rule.
 ### 9.3 The go-live `.env` block
 
 Applied at the post-close restart on 2026-09-28 (after removing the legacy
-`MAX_DAILY_LOSS="500"` line). This is the block as it stands in `.env` today
-(go-live 11:52 ET, streak reset added shortly after, final restart 13:13 ET
-onto `d66380d`) — names and values, verbatim:
+`MAX_DAILY_LOSS="500"` line), then extended intraday. This is the block as it
+stands in `.env` today (go-live 11:52 ET, streak reset added shortly after,
+restart 13:13 ET onto `d66380d`, the four intraday `*_LIVE_ENTRIES_ENABLED`
+flags below flipped on at 13:17 ET) — names and values, verbatim:
 
 ```
 # v-go-live-5k-2026-09-28: live sleeve inside a $5,000 margin-funded allocation (user directive 2026-09-28)
@@ -1200,6 +1222,12 @@ LEDGER_INTEGRITY=1
 
 # streak reset at go-live (user, 2026-09-28): sessions before this date never count as losing days
 DESK_STREAK_SINCE=2026-09-28
+
+# intraday builtin lanes taken live 13:17 ET 2026-09-28 (user directive) — see §9.1 update and §2.4
+ORB_LIVE_ENTRIES_ENABLED=1
+MEAN_REV_LIVE_ENTRIES_ENABLED=1
+DAY_TRADE_LIVE_ENTRIES_ENABLED=true
+DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1
 ```
 
 `STRATEGY_FIT_SHADOW` is **not** set (stays at its default `True`) — see 9.2.
@@ -1212,6 +1240,16 @@ single session, capped at 20 sessions. `DESK_STREAK_SINCE=2026-09-28`
 (`core/config.py:4593`, `core/loops/desk_loop.py::_streak_since`) floors the
 losing-day-streak lookback at go-live day — sessions before it can never
 trigger the desk's `two_losing_days` sit-out rule (see `docs/desk.md`).
+
+The four intraday flags are a separate switch from everything else in this
+block: they gate the builtin `day_trade_momentum`, `day_trade_momentum_short`,
+`mean_reversion`, and `orb_contraction_rvol` strategies' own
+`*_LIVE_ENTRIES_ENABLED` checks (§2.4, §3.2 gates #13/#17/#18), not the
+`fit:mr_20d`/`fit:mom_12_1` sleeve. Flipping them on does not by itself size
+every lane up — `ENABLE_PLAYBOOK_GATE=1` still suspends `dt_momentum|long`
+(day-trade momentum long is skipped outright) and holds
+`mean_rev_intraday|long` on 0.5x probation; see the update note at the top of
+§9 and §9.5.
 
 **`.env` quoting rule.** `FIT_LANE_LIVE_ALLOWLIST` must be quoted —
 `FIT_LANE_LIVE_ALLOWLIST="mr_20d:long,mom_12_1:long:risk_on|mixed"` — because
@@ -1317,8 +1355,10 @@ broker calls with explicit timeout errors; active-open-desk and desk scan
 bounded; fail-closed vetoes on provider timeout) → **a5382bc** (screener
 quote uses the 3 s quote budget; close-timeout audit says the position is
 unprotected) → tests pinned at **d66380d**, which is the build the bot has
-run on since the 13:13 ET restart (pid 1300568). Full facts, RED/GREEN
-evidence and round-by-round findings:
+run on since the 13:13 ET restart. A further restart at 13:17 ET (pid
+`1301804`, current) picked up the four intraday `*_LIVE_ENTRIES_ENABLED`
+flags (§9.1 update, §9.3) — same `d66380d` build, `.env` only. Full facts,
+RED/GREEN evidence and round-by-round findings:
 `.superpowers/sdd/2026-09-28-go-live-5k/task-4-report.md`.
 
 The trigger: on 2026-09-28 the live process wedged (247 of 251 threads parked
