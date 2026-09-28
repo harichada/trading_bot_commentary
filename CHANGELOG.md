@@ -2,6 +2,51 @@
 
 ## 2026-09-28
 
+### Risk Console (v-risk-console-2026-09-28)
+- feat(console): a live-editable registry of risk knobs backed entirely by
+  `Config().yaml` (`core/settings_console.py` — `KNOBS`, `coerce`, `classify`;
+  `core/settings_console_store.py` — submit/queue/promote/audit). Every
+  change is classified `tighten`/`loosen`/`noop`
+  (`core/settings_console.py::classify`): a `tighten` applies immediately, a
+  `loosen` queues to `<DESK_DATA_DIR>/pending_settings.json` and only lands
+  at the next session's `Config().SETTINGS_PROMOTE_TIME_ET` (default
+  `09:25` ET, `trading.settings_promote_time_et`, no env override), promoted
+  by the existing desk loop tick alongside the 09:00/09:35/16:05 desk steps.
+  Every change (applied, pending, promoted, cancelled, rejected,
+  block/unblock) is appended to `<DESK_DATA_DIR>/settings_audit.ndjson`.
+- feat(console): `GET /api/console`, `PUT /api/console/{key}`,
+  `POST /api/console/block-entries`, `DELETE /api/console/pending/{id}`,
+  `GET /api/console/audit`, and a dashboard card. `Config().BLOCK_NEW_ENTRIES`
+  (yaml-only `trading.block_new_entries`, no env override) is an immediate
+  kill switch for new entries only — exits and position management are
+  unaffected — checked once at the top of the signal router
+  (`core/engine.py`) and logging `engine_decision component=signal_router
+  symbol=<SYM> action=skip reason=entries_blocked_by_console` per skipped
+  signal; un-blocking requires `confirm: "YES"`.
+- feat(console): `trading.settings_console.allocation_ceiling` (default
+  `$5,000`) bounds the `money`-kind knobs and is never itself writable via
+  the console (set only by the migration script below or by hand in yaml).
+  `FIT_LANES_ENABLED` and `DESK_STREAK_SINCE` stay file-only by design — the
+  former needs a process restart to take effect and the console refuses
+  writes to it (`restart_required`); the latter isn't a console knob at all,
+  read directly from the environment by `core/loops/desk_loop.py`.
+- chore(console): `scripts/migrate_console_settings.py` — the one-time
+  cutover for env-shadowed console knobs (an `.env` line for a console knob
+  wins over its yaml value at read time, so a console edit otherwise does
+  nothing until the `.env` line is removed). Dry-run prints only the knobs
+  it would migrate plus the allocation-ceiling line — never another `.env`
+  line, so a secret is never echoed; `--apply` backs up both files
+  (`<file>.bak_console_<timestamp>`), writes yaml via `ConfigManager.update`,
+  and comments out each migrated `.env` line as `# migrated-to-yaml <date>:
+  NAME=<value>`, preserving every other line byte-for-byte.
+  `MAX_DAILY_LOSS` migrates only when its `.env` value parses as a fraction
+  in `(0, 1]` (this repo's `.env` once held a legacy dollar value — see
+  `core/config.py::_env_fraction`). Tests:
+  `tests/test_migrate_console_settings.py` (tmp_path fixtures only, no
+  process spawn). Docs: `docs/BOT_OPERATIONS_MANUAL.md` § "9.9 Risk
+  Console" (former § "9.9 Ledger-integrity migration" renumbered to
+  "9.10"), `docs/desk.md` (flags table + `Files under data/desk/`).
+
 ### Go-live with a $5,000 allocation
 - feat(risk): `BOT_CAPITAL_ALLOCATION` (`core/config.py` § `v-go-live-5k-2026-09-28`, default `0.0` = off)
   caps `RiskManagerWithCommentary.effective_balance()`/`.effective_buying_power()`

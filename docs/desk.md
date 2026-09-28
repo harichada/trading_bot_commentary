@@ -93,6 +93,8 @@ below needs to be set to run the desk):
 | `DESK_JOURNAL_TIME_ET` | `16:05` | ET wall-clock time of the journal write. |
 | `DESK_CALENDAR_PATH` | `data/desk/calendar.json` | Economic-calendar file the plan's sit-out rule reads. |
 | `DESK_STREAK_SINCE` | `""` (**`2026-09-28` in `.env` since the go-live streak reset**) | Floors the `two_losing_days` sit-out rule's lookback (`STREAK_LOOKBACK_DAYS=21` by default, `core/loops/desk_loop.py`) at this ISO date — sessions before it never count as losing days. Empty (default) leaves the normal 21-day lookback in place. Set at the user's request at go-live ("start counting from today"); unparsable values are logged and ignored (`desk_loop: DESK_STREAK_SINCE unusable`), falling back to the normal window. |
+| `BLOCK_NEW_ENTRIES` | `False` | **Yaml-only** — `trading.block_new_entries`, no env override by design (see `docs/BOT_OPERATIONS_MANUAL.md` § "Risk Console"). The Risk Console's immediate kill switch for new entries; exits and position management are unaffected. Set via `POST /api/console/block-entries` (un-blocking requires `confirm: "YES"`), not `.env`. Skipped signals log `engine_decision component=signal_router symbol=<SYM> action=skip reason=entries_blocked_by_console`. |
+| `SETTINGS_PROMOTE_TIME_ET` | `09:25` | ET wall-clock time the desk loop promotes queued Risk Console "loosen" changes from `<DESK_DATA_DIR>/pending_settings.json` into yaml (`Config().SETTINGS_PROMOTE_TIME_ET`, yaml `trading.settings_promote_time_et` — no env override, same reasoning as `BLOCK_NEW_ENTRIES`). A "tighten" console change applies immediately and never queues. |
 
 **Day one recommendation: `DESK_SCAN_MAX_SYMBOLS=20`.** The default 60 makes the
 09:35 refresh fire roughly 60-80 provider calls in a two-minute window right
@@ -176,6 +178,18 @@ All git-ignored runtime output, rooted at `Config().DESK_DATA_DIR` (default
   `calendar_high_impact_before_1030` sit-out rule. A missing file means "no
   scheduled events" — not an error. Malformed rows are skipped and logged,
   never raise.
+- **`pending_settings.json`** — the Risk Console's queue of "loosen" changes
+  awaiting the next `SETTINGS_PROMOTE_TIME_ET` promotion (`core/settings_console_store.py`,
+  atomic write, same tmp-file + `os.replace` pattern). A JSON list of rows:
+  `id, key, old, new, submitted_at, effective_at, actor, reason`. A "tighten"
+  change never appears here — it applies immediately instead. See
+  `docs/BOT_OPERATIONS_MANUAL.md` § "Risk Console".
+- **`settings_audit.ndjson`** — the Risk Console's append-only audit trail,
+  one JSON object per line: `ts, actor, event, key, old, new, direction,
+  effective_at, reason`. `event` is one of `applied, pending, promoted,
+  cancelled, rejected, block_entries, unblock_entries`. Read via
+  `GET /api/console/audit` or `core/settings_console_store.py::read_audit`
+  (never raises; a malformed line is skipped and logged, not fatal).
 
 ## Audit lines to grep
 

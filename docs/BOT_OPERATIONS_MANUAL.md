@@ -1484,7 +1484,117 @@ it never appears in `ps` or the log.
   1-5 …` line from `crontab -e`. The script itself is inert until cron (or an
   operator) invokes it — nothing else calls it automatically.
 
-### 9.9 Ledger-integrity migration
+### 9.9 Risk Console
+
+The Risk Console (`core/settings_console.py`, `core/settings_console_store.py`,
+`GET/PUT /api/console/*`, the dashboard card) is a live-editable registry of
+risk knobs backed entirely by `Config().yaml` — it never writes `.env`. Each
+knob (`KNOB_BY_KEY` in `core/settings_console.py`) carries a `kind`
+(`money`/`fraction`/`int`/`bool`/`csv`), a valid range or allowlist, and a
+`loosen` direction used to classify every change.
+
+**The ratchet rule.** A change is classified `tighten` (more conservative),
+`loosen` (more permissive) or `noop` by comparing the new value against the
+knob's current effective value (`core/settings_console.py::classify`). A
+`tighten` applies immediately — the operator wants the risk envelope smaller
+*right now*, so there is no reason to wait. A `loosen` is queued instead: it
+is written to `<DESK_DATA_DIR>/pending_settings.json` and only takes effect
+at the next session's settings-promotion step, **09:25 ET** by default
+(`Config().SETTINGS_PROMOTE_TIME_ET`, yaml `trading.settings_promote_time_et`
+— env has no override, deliberately: this is a desk-loop schedule knob, not
+something a stray `.env` line should be able to move), fired once per session
+day by the desk loop (`core/loops/desk_loop.py`, same `DeskLoop.tick()` that
+drives the 09:00/09:35/16:05 desk steps — see `docs/desk.md` § "Timeline").
+This gives a human a full session's notice before any risk limit actually
+gets more permissive, while a tightening protective change never waits on
+anyone.
+
+**What stays file-only, and why.**
+- `DESK_STREAK_SINCE` — not a console knob at all. It is read directly from
+  the environment by `core/loops/desk_loop.py` to floor the losing-streak
+  sit-out lookback (`docs/desk.md`'s flags table); editing the streak-reset
+  date from a web form is exactly the kind of one-off, rarely-touched
+  operator action that belongs in `.env`, not in a change log meant for
+  routine risk tuning.
+- `trading.settings_console.allocation_ceiling` — the dollar ceiling the
+  `money`-kind knobs (`bot_capital_allocation`) are validated against
+  (`core/settings_console.py::_coerce_money`, default `$5,000`
+  `DEFAULT_ALLOCATION_CEILING`). It is set once by the migration script (see
+  below) or by hand in yaml, never by a console PUT — raising your own
+  ceiling from the same console that is supposed to be constrained by it
+  would defeat the point.
+- `FIT_LANES_ENABLED` — the knob exists in the registry (`restart_required=True`)
+  purely so its value is still validated, but the console **refuses writes
+  to it** (`core/settings_console_store.py::submit_change` rejects any
+  `restart_required` knob with reason `restart_required`). Which fit-lane
+  families are loaded at all is a process-start decision
+  (`strategies/fit_lane_admission.py` reads it once at boot); changing it
+  without a restart would silently desync the running process from what it
+  reports.
+
+**The env-shadowing rule.** Every other console knob also has an `.env`
+name (`Knob.env_name`). Per this repo's normal precedence (env wins over
+yaml wins over the code default, `docs/desk.md` § "The four flags"), an
+`.env` line for a console knob **shadows** the console entirely: a PUT to
+that key is rejected with `env_shadowed: <NAME> is set in .env; the yaml
+value is ignored until it is removed` (`core/settings_console_store.py::submit_change`),
+and `GET /api/console` marks that knob `env_shadowed: true` so the dashboard
+card can show it as non-editable rather than silently accepting an edit that
+would do nothing. The fix is to migrate the value out of `.env` and into
+yaml once, so the console becomes the single source of truth for it going
+forward.
+
+**Migration.** `scripts/migrate_console_settings.py` does the cutover for
+every console knob still set in `.env` (except `FIT_LANES_ENABLED` and
+`DESK_STREAK_SINCE` above, and `MAX_DAILY_LOSS` unless its `.env` value
+parses as a fraction in `(0, 1]` — this machine's `.env` once held a
+*dollar* `MAX_DAILY_LOSS=500`, and migrating that literally into the
+fraction-typed yaml key would set the daily-loss circuit to 500x equity, see
+`core/config.py::_env_fraction`). Dry-run first, review, then apply:
+
+```bash
+python scripts/migrate_console_settings.py --env .env --yaml "Config().yaml"
+python scripts/migrate_console_settings.py --env .env --yaml "Config().yaml" --apply
+```
+
+Dry-run prints only the knobs it would migrate (`NAME=value → trading.<key>:
+<yaml value>`) and the `trading.settings_console.allocation_ceiling` line it
+would add — never any other `.env` line, so a secret such as
+`TRADING_API_KEY` sitting in `.env` is never echoed. `--apply` backs up both
+files (`<file>.bak_console_<YYYYmmdd_HHMMSS>`), writes the yaml keys via
+`ConfigManager.update(...)`, and comments out each migrated `.env` line in
+place as `# migrated-to-yaml <date>: NAME=<original value>` — every other
+`.env` line, migrated or not, is preserved byte-for-byte. **The bot must be
+restarted afterward**: `.env` is only read at process start, so a migrated
+value keeps reading from the (now-stale, but still present until the next
+restart) in-process environment until the restart picks up the yaml value
+and the console line stops reporting `env_shadowed`.
+
+**The block switch.** `POST /api/console/block-entries` sets yaml-only
+`trading.block_new_entries` (`Config().BLOCK_NEW_ENTRIES`, no env override),
+an immediate kill switch for *new* entries only — exits and position
+management are untouched, checked at the top of the signal router before
+any strategy or gate runs. Every signal skipped this way logs:
+
+```
+engine_decision component=signal_router symbol=<SYM> action=skip reason=entries_blocked_by_console
+```
+
+Un-blocking requires `confirm: "YES"` in the request body
+(`core/settings_console_store.py::set_block_new_entries`) — a deliberate
+extra step so a misclick cannot silently resume live entries.
+
+**Endpoints** (all under `/api/console`, all file-backed, never a 500 — see
+`core/settings_console_store.py`): `GET /api/console` (every knob's current
+value, direction it would classify as, and `env_shadowed` status);
+`PUT /api/console/{key}` (submit a change — applies if a tighten, queues if
+a loosen); `POST /api/console/block-entries` (set/clear the kill switch,
+`confirm: "YES"` required to clear); `DELETE /api/console/pending/{id}`
+(cancel a queued loosen before it promotes); `GET /api/console/audit` (the
+`settings_audit.ndjson` trail — every applied, queued, cancelled, promoted,
+rejected and block/unblock event).
+
+### 9.10 Ledger-integrity migration
 
 Applied 2026-09-28, 09:30 ET, during a quiet window, via
 `scripts/migrate_ledger_integrity.py` (idempotent `ADD COLUMN IF NOT EXISTS`
