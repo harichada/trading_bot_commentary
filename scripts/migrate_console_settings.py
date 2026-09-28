@@ -31,6 +31,7 @@ import copy
 import json
 import os
 import shutil
+import socket
 import sys
 from datetime import datetime
 from typing import Any
@@ -198,6 +199,17 @@ def migrate(env_path: str, yaml_path: str, apply: bool, now: datetime) -> dict:
         result["ceiling_written"] = ceiling_will_write
     return result
 
+def bot_is_running(port: int = 9000, host: str = "127.0.0.1") -> bool:
+    """True when something answers on the bot's port. The migration must not
+    run under a live process: its ConfigManager would rewrite Config().yaml
+    from a pre-migration memory copy on its next update() (final review C2)."""
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Migrate Risk Console knobs from .env into Config().yaml.")
@@ -205,7 +217,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--yaml", default="Config().yaml", help="path to the yaml config")
     parser.add_argument("--apply", action="store_true",
                          help="write the changes (default: dry-run only)")
+    parser.add_argument("--port", type=int, default=9000,
+                         help="bot API port checked before --apply (default 9000)")
+    parser.add_argument("--force", action="store_true",
+                         help="apply even if the bot answers on --port (NOT recommended)")
     args = parser.parse_args(argv)
+
+    if args.apply and not args.force and bot_is_running(args.port):
+        print(f"Refusing --apply: the bot answers on port {args.port}. Stop it first "
+              f"(a running process would overwrite the migrated yaml), then re-run.")
+        sys.exit(4)
 
     result = migrate(args.env, args.yaml, apply=args.apply, now=datetime.now())
 

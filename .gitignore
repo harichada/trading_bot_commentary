@@ -74,3 +74,8 @@ data/desk/
 # v-wedge-fix-2026-09-28: bot watchdog runtime artifacts (scripts/bot_watchdog.sh)
 bot_watchdog.log
 bot_watchdog.state
+
+# v-risk-console-2026-09-28: migration backups / temp files hold secrets
+.env.bak_*
+.env.tmp
+Config().yaml.*

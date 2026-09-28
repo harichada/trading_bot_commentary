@@ -150,11 +150,26 @@ def test_invalid_value_skipped_without_write(tmp_path):
 
 
 def test_validation_band_abort_exit_3_no_writes(tmp_path):
-    """0.5 is a legal knob-level fraction (0, 1] but outside ConfigManager's
-    own [0.01, 0.20] runtime band for max_daily_loss -- must abort before any
-    write, leaving both files and backups untouched."""
-    env_content = ENV_CONTENT.replace("MAX_DAILY_LOSS=0.03\n", "MAX_DAILY_LOSS=0.5\n")
-    env_path, yaml_path = _write_fixtures(tmp_path, env_content=env_content)
+    """The registry bounds now mirror ConfigManager's band, so the abort path
+    is exercised by forcing the validator itself to refuse: it must abort
+    before any write, leaving both files and backups untouched."""
+    from core.config import ConfigManager
+    import scripts.migrate_console_settings as mod
+    original = ConfigManager.validate_candidate
+    def refuse(config):
+        original(config)
+        if config.get("trading", {}).get("max_daily_loss") == 0.03:
+            raise ValueError("forced band failure")
+    ConfigManager.validate_candidate = staticmethod(refuse)
+    mod.bot_is_running = lambda port=9000, host="127.0.0.1": False
+    try:
+        env_path, yaml_path = _write_fixtures(tmp_path, env_content=ENV_CONTENT)
+        _band_abort_body(env_path, yaml_path)
+    finally:
+        ConfigManager.validate_candidate = staticmethod(original)
+
+
+def _band_abort_body(env_path, yaml_path):
     orig_env = open(env_path, encoding="utf-8").read()
     orig_yaml = open(yaml_path, encoding="utf-8").read()
 
@@ -242,8 +257,10 @@ def test_duplicate_env_keys_all_commented_out(tmp_path):
     assert yaml.safe_load(y.read_text())["trading"]["risk_per_trade_pct"] == 0.01
 
 
-def test_apply_twice_is_a_noop_exit_2(tmp_path, capsys):
+def test_apply_twice_is_a_noop_exit_2(tmp_path, capsys, monkeypatch):
     from scripts.migrate_console_settings import main
+    import scripts.migrate_console_settings as mod
+    monkeypatch.setattr(mod, "bot_is_running", lambda port=9000, host="127.0.0.1": False)
     env = tmp_path / ".env"
     env.write_text("RISK_PER_TRADE_PCT=0.01\n")
     y = tmp_path / "c.yaml"
@@ -261,3 +278,29 @@ def test_apply_twice_is_a_noop_exit_2(tmp_path, capsys):
     before = env.read_text()
     assert _run() == 2
     assert env.read_text() == before
+
+
+def test_apply_refuses_while_bot_answers(tmp_path, monkeypatch):
+    import scripts.migrate_console_settings as mod
+    env_path, yaml_path = _write_fixtures(tmp_path, env_content=ENV_CONTENT)
+    before = open(env_path, encoding="utf-8").read()
+    monkeypatch.setattr(mod, "bot_is_running", lambda port=9000, host="127.0.0.1": True)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--env", env_path, "--yaml", yaml_path, "--apply"])
+    assert exc_info.value.code == 4
+    assert open(env_path, encoding="utf-8").read() == before
+    # dry-run is always allowed
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--env", env_path, "--yaml", yaml_path])
+    assert exc_info.value.code == 0
+
+
+def test_env_tmp_is_owner_only(tmp_path):
+    import os, stat
+    from scripts.migrate_console_env import write_env_atomic
+    env = tmp_path / ".env"
+    env.write_text("A=1\n")
+    os.chmod(env, 0o600)
+    write_env_atomic(str(env), ["A=1\n"], {0: "# migrated A=1\n"})
+    assert stat.S_IMODE(os.stat(env).st_mode) == 0o600
+    assert not (tmp_path / ".env.tmp").exists()

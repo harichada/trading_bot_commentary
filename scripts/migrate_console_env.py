@@ -75,7 +75,9 @@ def write_env_atomic(env_path: str, env_lines: list[str],
     mode, then `os.replace`."""
     new_lines = [replacements.get(idx, line) for idx, line in enumerate(env_lines)]
     tmp_path = f"{env_path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8", newline="") as fh:
+    # Created owner-only from the first byte: the file holds secrets.
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
         fh.writelines(new_lines)
     shutil.copymode(env_path, tmp_path)
     os.replace(tmp_path, env_path)
