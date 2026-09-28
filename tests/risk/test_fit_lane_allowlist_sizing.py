@@ -102,6 +102,8 @@ def test_allowlisted_signal_sizes_on_the_risk_per_trade_path(monkeypatch):
     (~$800 notional, $24 = 0.48% of the allocation at risk), against the 3 shares (~$300) the
     old NaN-score path produced. The $1,000 buying-power cap is the next binding limit (10
     shares), which a strength of 0.8 or more reaches — see the table test below."""
+    # The live .env pins FIT_LANE_ALLOWLIST_STRENGTH=0.8; this test asserts the default.
+    monkeypatch.setenv("FIT_LANE_ALLOWLIST_STRENGTH", "0.6")
     _cfg(monkeypatch)
     from strategies.fit_lane_admission import ADMIT_ALLOWLIST
     shares = _size(monkeypatch, _fit_signal(ADMIT_ALLOWLIST))

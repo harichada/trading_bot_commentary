@@ -241,6 +241,8 @@ def test_allowlisted_signal_gets_the_neutral_strength_and_sizing_basis(monkeypat
     """An allowlisted entry has no score to derive a Kelly fraction from (an absent row's score
     is NaN, which the clamp floors at 0.2 and the risk manager then caps at Kelly 0.20). It must
     size on the risk-per-trade path instead, at a neutral strength."""
+    # The live .env pins FIT_LANE_ALLOWLIST_STRENGTH=0.8; this test asserts the default.
+    monkeypatch.setenv("FIT_LANE_ALLOWLIST_STRENGTH", "0.6")
     from strategies.fit_lane_admission import (ADMIT_ALLOWLIST, DEFAULT_ALLOWLIST_STRENGTH,
                                                entry_to_signal)
     sig = entry_to_signal(_entry(), "mom_12_1", {"rank_min": 0.8}, "", float("nan"), "NVDA",

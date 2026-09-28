@@ -140,6 +140,8 @@ def test_allowlisted_thin_fail_row_goes_live(monkeypatch, tmp_path):
 
 
 def test_admitted_signal_records_the_symbol_check_and_neutral_sizing(monkeypatch, tmp_path):
+    # The live .env pins FIT_LANE_ALLOWLIST_STRENGTH=0.8; this test asserts the default.
+    monkeypatch.setenv("FIT_LANE_ALLOWLIST_STRENGTH", "0.6")
     lane = _lane(monkeypatch, tmp_path, {}, allowlist="toy:long")
     sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
     assert sig is not None
