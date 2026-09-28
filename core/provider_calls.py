@@ -32,6 +32,20 @@ THE CONTRACT
 themselves synchronous (e.g. functions handed to a callback or already
 running in a worker thread). It bounds the *caller*, not the worker.
 
+THE BROKER CONTRACT IS DIFFERENT (fix round 2)
+----------------------------------------------
+`broker_call(...)` / `broker_call_sync(...)` bound Schwab order and account
+calls the same way, but on timeout they RAISE `BrokerTimeoutError` instead of
+returning None. A market-data timeout means "no data, use your fallback"; an
+order timeout means "we do not know whether the broker accepted this order".
+Returning None there would read as "no order placed" — the one conclusion the
+caller is not entitled to draw — so it raises, every existing `except
+Exception` handler treats it as a broker error, and no retry is implied.
+
+`last_call_timed_out(site)` reports whether the LAST call at a given site
+timed out, so a caller that gets None can tell "the provider timed out" from
+"this data legitimately does not exist" and fail closed on the former.
+
 HONEST LIMIT
 ------------
 `asyncio.wait_for` abandons the await; it cannot abandon the thread. A
@@ -66,6 +80,31 @@ _executor: Optional[ThreadPoolExecutor] = None
 _last_log_at: Dict[str, float] = {}
 _suppressed: Dict[str, int] = {}
 _clock: Callable[[], float] = time.monotonic
+#: Per-site outcome of the most recent call: True when it timed out. Callers
+#: that receive None use this to tell a timeout from legitimately absent data
+#: (fix round 2, Minor 6 — the market-context entry vetoes fail closed on a
+#: timeout and stay fail-open when the data simply is not there).
+_timed_out: Dict[str, bool] = {}
+
+
+class BrokerTimeoutError(TimeoutError):
+    """A broker order/account call did not answer inside its budget.
+
+    Subclasses the builtin `TimeoutError` (itself an `OSError`) so that every
+    existing `except Exception` handler around a Schwab call treats it as a
+    broker error without modification, while code that cares can catch it
+    precisely — the close path audits `broker_timeout_close` on it, and the
+    entry path audits `broker_timeout_entry` and never retries, because after
+    a timeout the order's fate at the broker is unknown.
+    """
+
+    def __init__(self, site: str, timeout: float) -> None:
+        self.site = site
+        self.timeout = float(timeout)
+        super().__init__(
+            f"broker_call_timeout site={site} timeout={self.timeout:.1f}s "
+            f"— order/account state at the broker is UNKNOWN"
+        )
 
 
 # ── configuration helpers ─────────────────────────────────────────────
@@ -79,6 +118,12 @@ def history_timeout() -> float:
     """Bar/history-shaped calls — a year of dailies legitimately takes
     longer than a quote, so they get their own (larger) budget."""
     return float(Config().PROVIDER_HISTORY_TIMEOUT_SEC)
+
+
+def broker_timeout() -> float:
+    """Order/account calls. Generous on purpose: cutting an order call short
+    is worse than waiting for it, because the outcome is then unknown."""
+    return float(Config().BROKER_CALL_TIMEOUT_SEC)
 
 
 # ── executor ownership ────────────────────────────────────────────────
@@ -113,6 +158,7 @@ def reset_state() -> None:
         old, _executor = _executor, None
         _last_log_at.clear()
         _suppressed.clear()
+        _timed_out.clear()
         _clock = time.monotonic
     if old is not None:
         old.shutdown(wait=False)
@@ -160,6 +206,21 @@ def _log_timeout(site: str, timeout: float) -> None:
     )
 
 
+def last_call_timed_out(site: str) -> bool:
+    """Did the most recent call at `site` time out?
+
+    False for a site that has never been called. Deliberately last-outcome,
+    not ever-timed-out: a caller asks this to interpret the None it just got.
+    """
+    with _lock:
+        return bool(_timed_out.get(site, False))
+
+
+def _record_outcome(site: str, timed_out: bool) -> None:
+    with _lock:
+        _timed_out[site] = timed_out
+
+
 async def provider_call(
     fn: Callable[..., Any],
     *args: Any,
@@ -176,12 +237,15 @@ async def provider_call(
     call = functools.partial(fn, *args, **kwargs)
     loop = asyncio.get_event_loop()
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             loop.run_in_executor(get_executor(), call), timeout=budget,
         )
     except asyncio.TimeoutError:
+        _record_outcome(site, True)
         _log_timeout(site, budget)
         return None
+    _record_outcome(site, False)
+    return result
 
 
 def provider_call_sync(
@@ -201,8 +265,74 @@ def provider_call_sync(
     budget = default_timeout() if timeout is None else float(timeout)
     future = get_executor().submit(functools.partial(fn, *args, **kwargs))
     try:
-        return future.result(timeout=budget)
+        result = future.result(timeout=budget)
     except FutureTimeoutError:
         future.cancel()          # only helps if it never started
+        _record_outcome(site, True)
         _log_timeout(site, budget)
         return None
+    _record_outcome(site, False)
+    return result
+
+
+# ── broker calls: raise, never return None ────────────────────────────
+
+def _log_broker_timeout(site: str, timeout: float) -> None:
+    log_rate_limited(
+        f"broker_timeout:{site}",
+        lambda suppressed: (
+            f"broker_call_timeout site={site} timeout={timeout:.1f}s "
+            f"suppressed={suppressed} threads={threading.active_count()} "
+            f"— outcome at the broker is UNKNOWN; raising BrokerTimeoutError"
+        ),
+        level=logging.ERROR,
+    )
+
+
+async def broker_call(
+    fn: Callable[..., Any],
+    *args: Any,
+    timeout: Optional[float] = None,
+    site: str = "broker",
+    **kwargs: Any,
+) -> Any:
+    """Await a Schwab order/account call off the loop, bounded.
+
+    Returns the broker's response object. Raises `BrokerTimeoutError` if it
+    does not answer in time — see THE BROKER CONTRACT above. Every other
+    exception propagates unchanged.
+    """
+    budget = broker_timeout() if timeout is None else float(timeout)
+    call = functools.partial(fn, *args, **kwargs)
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(get_executor(), call), timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        _record_outcome(site, True)
+        _log_broker_timeout(site, budget)
+        raise BrokerTimeoutError(site, budget) from None
+    _record_outcome(site, False)
+    return result
+
+
+def broker_call_sync(
+    fn: Callable[..., Any],
+    *args: Any,
+    timeout: Optional[float] = None,
+    site: str = "broker",
+    **kwargs: Any,
+) -> Any:
+    """Blocking twin of :func:`broker_call` for synchronous call sites."""
+    budget = broker_timeout() if timeout is None else float(timeout)
+    future = get_executor().submit(functools.partial(fn, *args, **kwargs))
+    try:
+        result = future.result(timeout=budget)
+    except FutureTimeoutError:
+        future.cancel()
+        _record_outcome(site, True)
+        _log_broker_timeout(site, budget)
+        raise BrokerTimeoutError(site, budget) from None
+    _record_outcome(site, False)
+    return result

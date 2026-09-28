@@ -572,8 +572,13 @@ class SpyIndexContext:
     spy_last: float                    # Current SPY price
     spy_session_vwap: Optional[float]  # Session VWAP (None if unavailable)
     spy_vs_vwap: Optional[float]       # spy_last - spy_session_vwap (None if VWAP unavailable)
-    source: str                        # "cache" | "fresh" | "unavailable"
+    source: str                        # "cache" | "fresh" | "unavailable" | "timeout"
     spy_rth_open: Optional[float] = None  # v-open30-cont-rs-from-open-2026-09-24: RTH open
+    # v-wedge-fix-2026-09-28 fix round 2 (Minor 6): True when a provider call
+    # for this context TIMED OUT (as opposed to the data legitimately not
+    # existing). The index-confirm gate fails CLOSED in that case — "we could
+    # not check" must not read as "the check passed".
+    provider_timeout: bool = False
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -583,8 +588,19 @@ class SpyIndexContext:
 
     @property
     def is_above_vwap(self) -> bool:
-        """SPY last >= session VWAP. Fail-open if VWAP unavailable."""
+        """SPY last >= session VWAP.
+
+        Fail-OPEN when the VWAP is legitimately unavailable (no provider, no
+        bars, cold cache) — that is the long-standing behaviour.
+
+        Fail-CLOSED when it is unavailable because the provider TIMED OUT
+        (v-wedge-fix-2026-09-28 fix round 2, Minor 6). A hung Schwab call
+        silently turning an index-confirm gate into a pass is how a wedge
+        becomes a bad trade.
+        """
         if self.spy_session_vwap is None or self.spy_session_vwap <= 0:
+            if self.provider_timeout:
+                return False
             return True  # Fail-open: no data → don't block
         return self.spy_last >= self.spy_session_vwap
 
@@ -610,6 +626,15 @@ class SpyIndexContext:
 # Format: {"vwap": float, "fetched_at": datetime, "session_date": str}
 _SPY_VWAP_CACHE: dict = {}
 _SPY_VWAP_CACHE_TTL_SEC: float = 60.0  # Refresh VWAP every 60s
+
+# v-wedge-fix-2026-09-28 fix round 2 (Minor 4): the SPY quote (RTH open) is
+# fetched once per candidate symbol, so an unhealthy provider used to cost the
+# full timeout PER SYMBOL in a scan. Cached for 5s — short enough that the RTH
+# open (a fixed number after 09:30) and the timeout state stay current, long
+# enough that one scan pays for it once.
+# Format: {"quote": dict | None, "timed_out": bool, "fetched_at": datetime}
+_SPY_QUOTE_CACHE: dict = {}
+_SPY_QUOTE_CACHE_TTL_SEC: float = 5.0
 
 
 def _calculate_session_vwap_from_bars(bars_df) -> Optional[float]:
@@ -682,12 +707,15 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
         _logger.debug("get_spy_index_context: MarketIndicesCache failed: %s", exc)
 
     # v-open30-cont-rs-from-open-2026-09-24: fetch SPY RTH open from Schwab quote
+    # v-wedge-fix-2026-09-28 fix round 2: bounded, cached for 5s, and a timeout
+    # is remembered so the index-confirm gate can fail closed.
+    provider_timed_out = False
     if schwab_provider is not None:
         try:
-            spy_schwab_quote = provider_calls.provider_call_sync(
-                schwab_provider.get_quote, "SPY",
-                site="market_context_spy_quote",
+            spy_schwab_quote, _quote_timed_out = _spy_quote_cached(
+                schwab_provider, now_utc,
             )
+            provider_timed_out = provider_timed_out or _quote_timed_out
             if spy_schwab_quote and spy_schwab_quote.get('open', 0) > 0:
                 spy_rth_open = float(spy_schwab_quote['open'])
         except Exception as exc:
@@ -718,8 +746,12 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
                 timeout=provider_calls.history_timeout(),
                 site="market_context_spy_vwap_bars",
             )
-            # None (timeout) is handled inside the VWAP helper — no VWAP this
-            # pass, same as an empty frame.
+            if bars_df is None and provider_calls.last_call_timed_out(
+                "market_context_spy_vwap_bars"
+            ):
+                provider_timed_out = True
+            # None (timeout) is otherwise handled inside the VWAP helper — no
+            # VWAP this pass, same as an empty frame.
             calculated_vwap = _calculate_session_vwap_from_bars(bars_df)
             if calculated_vwap is not None and calculated_vwap > 0:
                 spy_vwap = calculated_vwap
@@ -737,12 +769,18 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
     if spy_last > 0 and spy_vwap is not None and spy_vwap > 0:
         spy_vs_vwap = spy_last - spy_vwap
 
+    if provider_timed_out and spy_vwap is None:
+        # Say so in the audit: the gate result below is a fail-closed, not a
+        # reading of the tape.
+        source = "timeout"
+
     return SpyIndexContext(
         spy_change_vs_prior_close=round(spy_change_pct, 4),
         spy_last=round(spy_last, 2),
         spy_session_vwap=round(spy_vwap, 2) if spy_vwap is not None else None,
         spy_vs_vwap=round(spy_vs_vwap, 4) if spy_vs_vwap is not None else None,
         source=source,
+        provider_timeout=provider_timed_out,
         spy_rth_open=round(spy_rth_open, 2) if spy_rth_open is not None else None,
     )
 
@@ -751,6 +789,39 @@ def clear_spy_vwap_cache() -> None:
     """Clear the SPY VWAP cache (for tests)."""
     global _SPY_VWAP_CACHE
     _SPY_VWAP_CACHE = {}
+
+
+def clear_spy_quote_cache() -> None:
+    """Clear the 5s SPY quote cache (for tests)."""
+    global _SPY_QUOTE_CACHE
+    _SPY_QUOTE_CACHE = {}
+
+
+def _spy_quote_cached(schwab_provider, now_utc) -> Tuple[Optional[dict], bool]:
+    """The SPY quote, from the 5s cache when warm. Returns (quote, timed_out).
+
+    The timeout flag is cached alongside the value on purpose: within the
+    window, every symbol in the scan must reach the SAME fail-closed verdict,
+    not just the first one that paid for the call.
+    """
+    cached = _SPY_QUOTE_CACHE.get("quote_data")
+    if cached is not None:
+        fetched_at = cached.get("fetched_at")
+        if (fetched_at is not None
+                and (now_utc - fetched_at).total_seconds() < _SPY_QUOTE_CACHE_TTL_SEC):
+            return cached.get("quote"), bool(cached.get("timed_out"))
+    quote = provider_calls.provider_call_sync(
+        schwab_provider.get_quote, "SPY",
+        site="market_context_spy_quote",
+    )
+    timed_out = (
+        quote is None
+        and provider_calls.last_call_timed_out("market_context_spy_quote")
+    )
+    _SPY_QUOTE_CACHE["quote_data"] = {
+        "quote": quote, "timed_out": timed_out, "fetched_at": now_utc,
+    }
+    return quote, timed_out
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -765,6 +836,16 @@ def clear_spy_vwap_cache() -> None:
 #   rs_from_open = (sym_last/sym_rth_open - 1) - (spy_last/spy_rth_open - 1)
 # ────────────────────────────────────────────────────────────────────
 
+#: v-wedge-fix-2026-09-28 fix round 2 (Minor 6): the RS-from-open floor gate's
+#: caller reads `rs_from_open is None` as FAIL-OPEN (skip the gate). So a
+#: provider timeout cannot be expressed as None — it has to present a value no
+#: floor can accept, tagged `source="timeout"` / `provider_timeout=True` so the
+#: audit line says why the entry was blocked rather than showing a real number.
+#: (The clean fix is for the caller to read `provider_timeout` directly;
+#: strategies/builtin.py is outside this round's file list.)
+RS_TIMEOUT_SENTINEL: float = -999.0
+
+
 @dataclass(frozen=True)
 class RsFromOpenContext:
     """RTH-open relative strength context for the RS floor gate."""
@@ -777,7 +858,10 @@ class RsFromOpenContext:
     spy_change_from_open: Optional[float]  # % change from RTH open
     rs_from_open: Optional[float]          # sym_change - spy_change
     rs_prior_close: float                  # Existing RS vs prior close (for comparison)
-    source: str                            # "schwab" | "partial" | "unavailable"
+    source: str                            # "schwab" | "partial" | "unavailable" | "timeout"
+    # True when the symbol's (or SPY's) RTH-open quote timed out: rs_from_open
+    # then holds RS_TIMEOUT_SENTINEL so the floor gate blocks, not skips.
+    provider_timeout: bool = False
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -817,12 +901,17 @@ def get_rs_from_open_context(
     source = "unavailable"
 
     # Get symbol's RTH open from Schwab quote
+    provider_timed_out = False
     if schwab_provider is not None:
         try:
             sym_quote = provider_calls.provider_call_sync(
                 schwab_provider.get_quote, symbol,
                 site="market_context_symbol_rth_open",
             )
+            if sym_quote is None and provider_calls.last_call_timed_out(
+                "market_context_symbol_rth_open"
+            ):
+                provider_timed_out = True
             if sym_quote and sym_quote.get('open', 0) > 0:
                 sym_rth_open = float(sym_quote['open'])
                 source = "schwab"
@@ -847,6 +936,14 @@ def get_rs_from_open_context(
     elif sym_change_from_open is not None:
         source = "partial"
 
+    # v-wedge-fix-2026-09-28 fix round 2 (Minor 6): fail CLOSED on a timeout.
+    # A missing RTH open because the provider hung is not the same as a symbol
+    # that genuinely has none, and only the latter may skip the floor gate.
+    if rs_from_open is None and (provider_timed_out or spy_ctx.provider_timeout):
+        rs_from_open = RS_TIMEOUT_SENTINEL
+        source = "timeout"
+        provider_timed_out = True
+
     return RsFromOpenContext(
         symbol=symbol,
         sym_last=round(sym_last, 2),
@@ -858,6 +955,7 @@ def get_rs_from_open_context(
         rs_from_open=round(rs_from_open, 4) if rs_from_open is not None else None,
         rs_prior_close=round(rs_prior_close, 4),
         source=source,
+        provider_timeout=provider_timed_out,
     )
 
 

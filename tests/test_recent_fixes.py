@@ -1938,7 +1938,11 @@ class TestCancelBracketBeforeClose:
         body = src[fn_start:fn_end]
 
         cancel_pos = body.find("_cancel_existing_orders(position.symbol)")
-        place_pos = body.find("self.schwab_client.place_order(")
+        # v-wedge-fix-2026-09-28 fix round 2: the call is now passed as a value
+        # to the bounded broker helper — `broker_call(self.schwab_client.
+        # place_order, ...)` — so match the attribute, not the open paren. The
+        # ordering this test protects is unchanged.
+        place_pos = body.find("self.schwab_client.place_order")
         assert cancel_pos != -1, "cancel call missing"
         assert place_pos != -1, "place_order call missing"
         assert cancel_pos < place_pos, (

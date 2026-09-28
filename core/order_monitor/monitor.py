@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from core.models import Position
 
 from core.config import Config
+# v-wedge-fix-2026-09-28 fix round 2: Schwab order calls are bounded and raise
+# BrokerTimeoutError on timeout; each existing handler treats that as a broker
+# error (order not confirmed), which is the only safe reading.
+from core.provider_calls import broker_call
 from core.order_monitor.brackets import (
     check_trail_replace,
     handle_bracket_not_working,
@@ -396,10 +400,15 @@ class OrderMonitor:
     async def fetch_working_orders(self) -> Optional[list]:
         """Fetch all WORKING orders from Schwab."""
         try:
-            response = self.engine.schwab_client.get_orders_for_account(
+            # v-wedge-fix-2026-09-28 fix round 2: bounded. This runs on the
+            # order_monitor loop (CRITICAL priority) — an unbounded fetch here
+            # stops every bracket/OCO from being reconciled.
+            response = await broker_call(
+                self.engine.schwab_client.get_orders_for_account,
                 self.engine.account_hash,
                 from_entered_datetime=datetime.now() - timedelta(days=7),
-                status=self.engine.schwab_client.Order.Status.WORKING
+                status=self.engine.schwab_client.Order.Status.WORKING,
+                site="monitor_working_orders",
             )
             if response.status_code == 200:
                 return response.json()

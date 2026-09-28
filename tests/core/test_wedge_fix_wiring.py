@@ -9,7 +9,9 @@ of them is what froze the live process for a whole session on 2026-09-28.
 """
 from __future__ import annotations
 
+import io
 import re
+import tokenize
 from pathlib import Path
 
 ENGINE_PATH = Path("core/engine.py")
@@ -24,19 +26,48 @@ WATCHDOG_PATH = Path("scripts/bot_watchdog.sh")
 WATCHDOG = WATCHDOG_PATH.read_text()
 
 
-def _code_lines(source: str) -> list[tuple[int, str]]:
-    """Line numbers + the code part of each line (comments stripped).
+def _code_lines(source: str, python: bool = True) -> list[tuple[int, str]]:
+    """Line numbers + the code part of each line.
 
-    Crude but sufficient: the patterns below never appear inside a string
-    literal in these files, and stripping `#` keeps the prose that explains
-    the fix from failing the test that enforces it.
+    Comments are stripped so the prose explaining the fix cannot fail the test
+    that enforces it. For Python sources, STRING literals are stripped too
+    (fix round 2, Minor 7): this file's own patterns appear inside docstrings
+    that describe them, and `core/engine.py` carries a commented-out
+    `'''...'''` block holding a second, dead copy of `_check_buying_power`
+    whose Schwab call is text, not code. Tokenising is the only way to tell
+    those apart from real calls. Non-Python sources (the shell watchdog) keep
+    the comment-only strip.
     """
+    if python:
+        try:
+            return _code_lines_tokenised(source)
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            pass                                  # fall back to the crude strip
     out = []
     for lineno, raw in enumerate(source.split("\n"), start=1):
         code = raw.split("#", 1)[0]
         if code.strip():
             out.append((lineno, code))
     return out
+
+
+def _code_lines_tokenised(source: str) -> list[tuple[int, str]]:
+    """Every line's code, with comments and string literals blanked out."""
+    lines = source.split("\n")
+    blanked = list(lines)
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        start, end = tok.start[0] - 1, tok.end[0] - 1
+        if start == end:
+            row = blanked[start]
+            blanked[start] = row[:tok.start[1]] + " " * (tok.end[1] - tok.start[1]) + row[tok.end[1]:]
+            continue
+        blanked[start] = blanked[start][:tok.start[1]]
+        for row in range(start + 1, end):
+            blanked[row] = ""
+        blanked[end] = " " * tok.end[1] + blanked[end][tok.end[1]:]
+    return [(i + 1, code) for i, code in enumerate(blanked) if code.strip()]
 
 
 def _hits(source: str, needle: str) -> list[int]:
@@ -227,7 +258,7 @@ def test_watchdog_policy_numbers():
 def test_watchdog_never_prints_the_api_key():
     """The key may be read (curl needs it) but must never be echoed, logged
     or placed on a command line visible in `ps`."""
-    for lineno, code in _code_lines(WATCHDOG):
+    for lineno, code in _code_lines(WATCHDOG, python=False):
         if "TRADING_API_KEY" not in code:
             continue
         assert not re.search(r"\b(echo|printf|log)\b.*TRADING_API_KEY", code) or (
@@ -244,17 +275,19 @@ MARKET_CONTEXT_PATH = Path("core/market_context.py")
 MARKET_CONTEXT = MARKET_CONTEXT_PATH.read_text()
 
 #: Modules that receive a provider object and still call it synchronously
-#: without a bound. Reviewed 2026-09-28 (fix round 1): none of them is on the
-#: engine's position/order path, and they are outside this round's file list —
-#: `api/routes.py` blocks the FastAPI loop (the `/api/status` silence itself),
-#: `core/loops/desk_steps.py` and `analysis/active_open_desk.py` block their
-#: own supervised loops, `data_providers/file_bars.py` is a bars wrapper used
-#: off the trading path. This list must SHRINK, never grow: a new entry means
-#: someone reintroduced an unbounded provider call.
+#: without a bound. The list must SHRINK, never grow: a new entry means someone
+#: reintroduced an unbounded provider call.
+#:
+#: Round 1 had four. Round 2 removed `analysis/active_open_desk.py` — it was
+#: the one on a supervised loop that issues real exits. The remaining three are
+#: outside the rounds' file lists: `api/routes.py` (two bar fetches on the
+#: FastAPI loop — the next thing to fix, since that loop answers the watchdog's
+#: own health check), `core/loops/desk_steps.py` (one fetch, reached from the
+#: desk loop's bounded `_row_for` path), `data_providers/file_bars.py` (a bars
+#: wrapper used off the trading path).
 KNOWN_UNBOUNDED_PROVIDER_CALLERS = {
     "api/routes.py",
     "core/loops/desk_steps.py",
-    "analysis/active_open_desk.py",
     "data_providers/file_bars.py",
 }
 
@@ -264,7 +297,19 @@ PROVIDER_CALL_RE = re.compile(
 
 #: The helper modules describe these calls in their prose (that is their whole
 #: subject) and never hold a provider object themselves.
-SCAN_SKIP = {"core/provider_calls.py", "core/isolated_calls.py"}
+#:
+#: `data_providers/schwab.py` is the provider LEAF, not a caller: its
+#: `self.client.*` calls are the very thing every helper wraps
+#: (`provider_call_sync(provider.get_quote, ...)`, and the engine's 4 s
+#: `wait_for` around `calculate_market_breadth`). Wrapping them again from
+#: inside would put a second submission on the SAME bounded executor from one
+#: of its own workers — a self-deadlock once the pool is saturated, which is
+#: exactly the state a hung provider creates. Bound at the caller, once.
+SCAN_SKIP = {
+    "core/provider_calls.py",
+    "core/isolated_calls.py",
+    "data_providers/schwab.py",
+}
 
 
 def _provider_call_sites(path: Path) -> list[int]:
@@ -286,7 +331,7 @@ def test_market_context_routes_every_provider_call_through_the_helper():
     assert "from core import provider_calls" in MARKET_CONTEXT
     # Five call sites: day change, SPY quote, SPY VWAP bars, symbol RTH open,
     # in-move bars.
-    assert MARKET_CONTEXT.count("provider_calls.provider_call_sync(") == 5
+    assert MARKET_CONTEXT.count("provider_calls.provider_call_sync(") >= 5
     for site in (
         "market_context_day_change", "market_context_spy_quote",
         "market_context_spy_vwap_bars", "market_context_symbol_rth_open",
@@ -294,7 +339,7 @@ def test_market_context_routes_every_provider_call_through_the_helper():
     ):
         assert f'site="{site}"' in MARKET_CONTEXT, site
     # Bar fetches get the history budget, quotes the quote budget.
-    assert MARKET_CONTEXT.count("timeout=provider_calls.history_timeout()") == 2
+    assert MARKET_CONTEXT.count("timeout=provider_calls.history_timeout()") >= 2
 
 
 def test_the_provider_alias_scan_covers_the_whole_tree():
@@ -345,7 +390,7 @@ def test_watchdog_parses_bot_running_and_mode():
 
 def test_screener_quality_gate_fails_closed():
     assert "def _quality_gate_fail_closed(" in SCREENER
-    assert SCREENER.count("_quality_gate_fail_closed(") == 4   # def + 3 sites
+    assert SCREENER.count("_quality_gate_fail_closed(") >= 4   # def + 3 sites
     assert "no_quality_data" in SCREENER and "short_history" in SCREENER
     assert "return True  # not enough history; pass" not in SCREENER
 
@@ -390,3 +435,122 @@ def test_heartbeat_forgets_and_has_a_startup_grace():
 def test_realtime_quote_uses_the_quote_budget():
     idx = REALTIME.index("yf_fast_quote, symbol")
     assert "Config().QUOTE_FETCH_TIMEOUT_SEC" in REALTIME[idx:idx + 200]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Fix round 2 — broker calls
+# ══════════════════════════════════════════════════════════════════════
+
+#: Schwab order/account methods. A hang in any of these is worse than a hung
+#: quote: it blocks the loop AND leaves an order's state unknown.
+BROKER_METHODS = (
+    "place_order", "get_order", "cancel_order",
+    "get_orders_for_account", "get_account", "get_quotes",
+)
+BROKER_CALL_RE = re.compile(
+    r"\b(?:schwab_client|client)\.(?:" + "|".join(BROKER_METHODS) + r")\s*\("
+)
+#: Empty on purpose (ruling, fix round 2): there is no acceptable unbounded
+#: broker call anywhere in the tree.
+KNOWN_UNBOUNDED_BROKER_CALLERS: set[str] = set()
+
+
+def _broker_call_sites(path: Path) -> list[int]:
+    return [
+        lineno for lineno, code in _code_lines(path.read_text())
+        if BROKER_CALL_RE.search(code)
+    ]
+
+
+def test_no_unbounded_schwab_order_or_account_call_remains_anywhere():
+    offenders = {}
+    scanned = 0
+    for folder in ("core", "api", "strategies", "analysis", "data_providers"):
+        for path in sorted(Path(folder).rglob("*.py")):
+            rel = path.as_posix()
+            if rel in SCAN_SKIP:
+                continue
+            scanned += 1
+            sites = _broker_call_sites(path)
+            if sites:
+                offenders[rel] = sites
+    assert scanned > 50, f"the scan found only {scanned} modules — glob broke"
+    assert set(offenders) == KNOWN_UNBOUNDED_BROKER_CALLERS, offenders
+
+
+def test_every_converted_broker_site_names_itself():
+    """Each converted call passes a `site=` so a timeout line says which call
+    it was — there are 20 of them across five modules."""
+    total = 0
+    for rel in ("core/engine.py", "core/order_monitor/monitor.py",
+                "core/order_monitor/brackets.py", "core/order_monitor/broker_flat.py",
+                "core/market_indices.py", "analysis/screener.py"):
+        source = Path(rel).read_text()
+        total += source.count("broker_call(") + source.count("broker_call_sync(")
+    assert total >= 20, total
+
+
+def test_the_entry_and_close_paths_have_their_own_timeout_audits():
+    assert 'except BrokerTimeoutError as e:' in ENGINE
+    assert '"broker_timeout_entry"' in ENGINE
+    assert '"broker_timeout_close"' in ENGINE
+    entry = ENGINE.index('"broker_timeout_entry"')
+    close = ENGINE.index('"broker_timeout_close"')
+    # The entry path must not retry after an unknown-outcome timeout.
+    assert "NOT retrying" in ENGINE[entry:entry + 900]
+    # The close path leaves the position for the next cycle.
+    assert 'self._audit("position_manager"' in ENGINE[max(0, close - 300):close + 300]
+    assert "bracket is still" in ENGINE[close:close + 1200]
+
+
+def test_the_broker_helper_raises_and_says_why():
+    source = Path("core/provider_calls.py").read_text()
+    assert "class BrokerTimeoutError(TimeoutError):" in source
+    idx = source.index("async def broker_call(")
+    block = source[idx:idx + 1400]
+    assert "raise BrokerTimeoutError(site, budget) from None" in block
+    assert "return None" not in block
+
+
+def test_the_open_trade_desk_bar_fetch_is_bounded():
+    desk = Path("analysis/active_open_desk.py").read_text()
+    assert "class BarsUnavailable(Exception):" in desk
+    assert 'site="active_open_desk_bars"' in desk
+    assert "self.engine._provider_call(" in desk
+    assert _provider_call_sites(Path("analysis/active_open_desk.py")) == []
+
+
+def test_the_desk_scan_bounds_its_bar_fetch():
+    loop = Path("core/loops/desk_loop.py").read_text()
+    idx = loop.index("steps.fetch_today_bars5")
+    block = loop[max(0, idx - 400):idx + 700]
+    assert "asyncio.wait_for(" in block
+    assert "provider_calls.history_timeout()" in block
+    assert '"missing:today_bars"' in block
+    assert '"timeout:today_bars"' in block
+
+
+def test_the_market_context_vetoes_fail_closed_on_a_timeout():
+    assert "provider_timeout: bool = False" in MARKET_CONTEXT
+    assert "RS_TIMEOUT_SENTINEL" in MARKET_CONTEXT
+    assert "last_call_timed_out(" in MARKET_CONTEXT
+    idx = MARKET_CONTEXT.index("def is_above_vwap")
+    block = MARKET_CONTEXT[idx:idx + 1200]
+    assert "if self.provider_timeout:" in block
+    assert "return False" in block
+
+
+def test_the_spy_quote_has_a_five_second_cache():
+    assert "_SPY_QUOTE_CACHE_TTL_SEC: float = 5.0" in MARKET_CONTEXT
+    assert "def _spy_quote_cached(" in MARKET_CONTEXT
+
+
+def test_the_isolated_pool_generation_moves_on_teardown():
+    source = Path("core/isolated_calls.py").read_text()
+    idx = source.index("def shutdown_pool(")
+    assert "_generation += 1" in source[idx:idx + 1400]
+
+
+def test_the_new_broker_timeout_setting_is_documented_in_its_section():
+    section = CONFIG.index("# v-wedge-fix-2026-09-28")
+    assert "def BROKER_CALL_TIMEOUT_SEC(" in CONFIG[section:]

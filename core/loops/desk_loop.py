@@ -42,6 +42,11 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.config import Config
+# v-wedge-fix-2026-09-28 fix round 2 (Important 3): the in-play scan's bar fetch
+# is bounded. `to_thread` keeps the loop responsive but its await does not
+# return, so one hung symbol stalled the whole scan. Imported as a module so
+# the budget is read at call time (and can be shrunk in tests).
+from core import provider_calls
 from core.desk.daily_plan import build_daily_plan, load_calendar_flags, refresh_plan
 from core.desk.inplay_features import load_prior_context, opening_features
 from core.desk.inplay_ranker import rank_in_play
@@ -344,9 +349,21 @@ class DeskLoop:
         see the hole rather than silently shortening its list."""
         root = getattr(cfg, "STRATEGY_HUNT_DATA_ROOT", "")
         try:
-            today = await asyncio.to_thread(steps.fetch_today_bars5,
-                                            getattr(self.engine, "data_provider", None),
-                                            symbol)
+            try:
+                today = await asyncio.wait_for(
+                    asyncio.to_thread(steps.fetch_today_bars5,
+                                      getattr(self.engine, "data_provider", None),
+                                      symbol),
+                    timeout=provider_calls.history_timeout(),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "desk_loop: today_bars fetch timed out for %s after %.1fs "
+                    "— row marked missing", symbol, provider_calls.history_timeout(),
+                )
+                return InPlayRow(symbol=str(symbol).strip().upper(),
+                                 reasons=("missing:today_bars",
+                                          "timeout:today_bars"))
             hist5, _daily = await asyncio.to_thread(load_history, root, symbol)
             if symbol not in context_cache:
                 context_cache[symbol] = await asyncio.to_thread(load_prior_context,

@@ -23,6 +23,10 @@ if TYPE_CHECKING:
     from core.engine import TradingEngineWithCommentary
     from core.models import Position
 
+# v-wedge-fix-2026-09-28 fix round 2: every Schwab order call in this module is
+# bounded; a timeout raises BrokerTimeoutError, which each existing handler
+# already treats as "the bracket was not confirmed".
+from core.provider_calls import broker_call
 from core.order_monitor.broker_flat import (
     check_broker_position_qty,
     handle_broker_flat_detected,
@@ -51,8 +55,10 @@ async def refresh_bracket_child_ids(
     if not parent_order:
         # Try to fetch the order directly
         try:
-            response = engine.schwab_client.get_order(
-                bracket_id, engine.account_hash
+            response = await broker_call(
+                engine.schwab_client.get_order,
+                bracket_id, engine.account_hash,
+                site="bracket_refresh_children",
             )
             if response.status_code == 200:
                 parent_order = response.json()
@@ -170,8 +176,10 @@ async def replace_bracket_with_new_stop(
 
     # Cancel existing bracket
     try:
-        cancel_response = engine.schwab_client.cancel_order(
-            bracket_id, engine.account_hash
+        cancel_response = await broker_call(
+            engine.schwab_client.cancel_order,
+            bracket_id, engine.account_hash,
+            site="bracket_cancel_for_replace",
         )
         if cancel_response.status_code not in [200, 201, 202]:
             logger.warning(
@@ -219,8 +227,10 @@ async def replace_bracket_with_new_stop(
 
         oco_order = one_cancels_other(take_profit_order, stop_loss_order)
 
-        response = engine.schwab_client.place_order(
-            engine.account_hash, oco_order.build()
+        response = await broker_call(
+            engine.schwab_client.place_order,
+            engine.account_hash, oco_order.build(),
+            site="bracket_replace_place",
         )
 
         if response.status_code in [200, 201]:
@@ -297,7 +307,10 @@ async def handle_bracket_not_working(
 
     # Fetch the bracket order status
     try:
-        response = engine.schwab_client.get_order(bracket_id, engine.account_hash)
+        response = await broker_call(
+            engine.schwab_client.get_order, bracket_id, engine.account_hash,
+            site="bracket_status",
+        )
         if response.status_code != 200:
             logger.warning(
                 "order_monitor: could not fetch bracket %s for %s: %d",
@@ -916,8 +929,10 @@ async def re_bracket_position(
 
         oco_order = one_cancels_other(take_profit_order, stop_loss_order)
 
-        response = engine.schwab_client.place_order(
-            engine.account_hash, oco_order.build()
+        response = await broker_call(
+            engine.schwab_client.place_order,
+            engine.account_hash, oco_order.build(),
+            site="re_bracket_place",
         )
 
         if response.status_code in [200, 201]:

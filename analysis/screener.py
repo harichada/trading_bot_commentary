@@ -8,7 +8,7 @@ import pandas as pd
 
 from core.config import Config
 from core.isolated_calls import run_isolated
-from core.provider_calls import log_rate_limited
+from core.provider_calls import broker_call_sync, log_rate_limited
 from core.models import CommentaryType
 from core.commentary import TradingCommentary
 from yf_isolated import yf_download_daily
@@ -672,7 +672,14 @@ class StockScreener:
     def _get_quote_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get detailed quote data for a symbol"""
         try:
-            response = self.client.get_quote(symbol)
+            # v-wedge-fix-2026-09-28 fix round 2 (Important 2): bounded. This
+            # is a raw Schwab quote per candidate symbol during a scan; it had
+            # no timeout at all. A timeout raises BrokerTimeoutError, which the
+            # handler below turns into "no quote for this symbol" — the same
+            # degradation any other quote failure already produced.
+            response = broker_call_sync(
+                self.client.get_quote, symbol, site="screener_quote",
+            )
             if response.status_code == 200:
                 data = response.json()
                 quote_data = data.get(symbol, {})

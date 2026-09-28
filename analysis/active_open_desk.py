@@ -65,6 +65,20 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from core import provider_calls
+from core.provider_calls import log_rate_limited
+
+
+class BarsUnavailable(Exception):
+    """The bar fetch for a position timed out.
+
+    v-wedge-fix-2026-09-28 fix round 2 (Important 1): raised instead of
+    returning None so the caller's existing guard skips the whole evaluation
+    for that position this tick. The distinction matters — None means "no
+    indicators, carry on with sentiment and regime", while a timed-out fetch
+    means we know nothing about price action and this desk issues real exits.
+    """
+
 if TYPE_CHECKING:
     from core.engine import TradingEngineWithCommentary
     from core.models import Position
@@ -498,12 +512,37 @@ class ActiveOpenDesk:
         return None
 
     async def _get_indicators(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Fetch current technical indicators for symbol."""
+        """Fetch current technical indicators for symbol.
+
+        v-wedge-fix-2026-09-28 fix round 2 (Important 1): the bar fetch runs
+        through the engine's bounded helper. This method is called on the desk
+        loop every ACTIVE_OPEN_DESK_INTERVAL_SEC (5 s default) for every open
+        position, and the desk issues real exits — an unbounded
+        `get_market_data` here could stall exit management for the whole book.
+
+        A timeout raises BarsUnavailable (the caller skips this position for
+        the tick). An empty frame or a missing provider still returns None,
+        which is "no indicators", not "no information".
+        """
+        if self.engine.data_provider is None:
+            return None
+        data = await self.engine._provider_call(
+            self.engine.data_provider.get_market_data, symbol,
+            timeout=provider_calls.history_timeout(),
+            site="active_open_desk_bars",
+        )
+        if data is None:
+            log_rate_limited(
+                "active_open_desk_bars_timeout",
+                lambda suppressed, sym=symbol: (
+                    f"active_open_desk: bar fetch timed out symbol={sym} "
+                    f"suppressed={suppressed} — skipping this position's "
+                    f"evaluation for this tick"
+                ),
+            )
+            raise BarsUnavailable(symbol)
         try:
-            if self.engine.data_provider is None:
-                return None
-            data = self.engine.data_provider.get_market_data(symbol)
-            if data is None or data.empty:
+            if data.empty:
                 return None
             indicators = await self.engine.technical_analyzer.analyze_with_commentary(
                 data, symbol

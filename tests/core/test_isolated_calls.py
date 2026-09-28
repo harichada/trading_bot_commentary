@@ -228,3 +228,32 @@ def test_the_pool_is_rebuilt_once_the_probe_works_again(monkeypatch):
     assert asyncio.run(
         isolated_calls.run_isolated(_child_double, 21, timeout=30.0, site="rebuilt")
     ) == 42
+
+
+# ── fix round 2 (Minor 5): a teardown invalidates the generation ───────
+
+def test_shutdown_pool_bumps_the_generation():
+    """The generation guard is what stops a killed pool's probe from tearing
+    down its successor, so the teardown itself must invalidate it — not only
+    the next creation."""
+    isolated_calls.shutdown_pool("test_reset")
+    pool = isolated_calls.get_pool()
+    gen_before = isolated_calls.current_generation()
+    isolated_calls.shutdown_pool("explicit")
+    gen_after = isolated_calls.current_generation()
+    assert gen_after > gen_before
+    assert isolated_calls.get_pool_if_created() is None
+    # A late probe callback from the dead pool is now a no-op.
+    isolated_calls._on_probe_done(_DoneFuture(RuntimeError("late")), generation=gen_before)
+    assert isolated_calls.probe_failed() is False
+
+
+class _DoneFuture:
+    def __init__(self, exc=None):
+        self._exc = exc
+
+    def cancelled(self):
+        return False
+
+    def exception(self):
+        return self._exc

@@ -62,11 +62,13 @@ def _tight_budgets(monkeypatch):
     mc.clear_symbol_day_change_cache()
     mc._SPY_VWAP_CACHE.clear()
     mc._SPY_BARS_CACHE.clear()
+    mc._SPY_QUOTE_CACHE.clear()      # fix round 2: the 5s SPY quote cache
     yield
     provider_calls.reset_state()
     mc.clear_symbol_day_change_cache()
     mc._SPY_VWAP_CACHE.clear()
     mc._SPY_BARS_CACHE.clear()
+    mc._SPY_QUOTE_CACHE.clear()
 
 
 def test_symbol_day_change_falls_back_to_the_bar_estimate_on_a_hang():
@@ -102,7 +104,10 @@ def test_spy_index_context_returns_without_the_rth_open_or_vwap_on_a_hang():
     assert provider.quote_calls == 1 and provider.bar_calls == 1
 
 
-def test_rs_from_open_context_degrades_to_unavailable_on_a_hang():
+def test_rs_from_open_context_degrades_on_a_hang():
+    """Round 1 bounded the call; round 2 (Minor 6) made the verdict fail
+    CLOSED — a timed-out RTH open blocks the entry instead of skipping the
+    floor gate. See test_rs_from_open_fails_closed_when_the_quote_timed_out."""
     spy_ctx = mc.get_spy_index_context(schwab_provider=None)
     provider = HangingProvider()
     started = time.monotonic()
@@ -112,8 +117,8 @@ def test_rs_from_open_context_degrades_to_unavailable_on_a_hang():
     )
     elapsed = time.monotonic() - started
     assert ctx.sym_rth_open is None
-    assert ctx.rs_from_open is None
-    assert ctx.source == "unavailable"
+    assert ctx.source == "timeout"
+    assert ctx.provider_timeout is True
     assert elapsed < BUDGET_SEC + 0.5
 
 
@@ -140,3 +145,104 @@ def test_a_provider_error_still_reaches_the_existing_fallback():
     )
     assert source == "bar_estimate"
     assert pct == pytest.approx(2.0)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Fix round 2
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Minor 4: the SPY quote is cached per 5s ───────────────────────────
+
+def test_the_spy_quote_is_cached_so_a_hang_costs_once_per_window():
+    """`get_spy_index_context` is called once per candidate symbol. Without a
+    cache a hung SPY quote costs the full budget for EVERY symbol in the scan;
+    with it, once per 5 s window."""
+    provider = HangingProvider()
+    started = time.monotonic()
+    for _ in range(4):
+        mc.get_spy_index_context(schwab_provider=provider)
+    elapsed = time.monotonic() - started
+    # One quote call and one bars call, not four of each.
+    assert provider.quote_calls == 1, provider.quote_calls
+    assert elapsed < 2 * BUDGET_SEC + 0.8, f"{elapsed:.2f}s for four contexts"
+
+
+def test_the_spy_quote_cache_serves_the_value_it_fetched():
+    ctx1 = mc.get_spy_index_context(schwab_provider=GoodProvider())
+    assert ctx1.spy_rth_open == pytest.approx(100.0)
+    # A later hang inside the window keeps serving the cached RTH open.
+    provider = HangingProvider()
+    ctx2 = mc.get_spy_index_context(schwab_provider=provider)
+    assert ctx2.spy_rth_open == pytest.approx(100.0)
+    assert provider.quote_calls == 0
+
+
+def test_the_spy_quote_cache_expires():
+    provider = GoodProvider()
+    mc.get_spy_index_context(schwab_provider=provider)
+    mc.clear_spy_quote_cache()
+    hanging = HangingProvider()
+    ctx = mc.get_spy_index_context(schwab_provider=hanging)
+    assert hanging.quote_calls == 1
+    assert ctx.spy_rth_open is None
+    assert mc._SPY_QUOTE_CACHE_TTL_SEC == pytest.approx(5.0)
+
+
+# ── Minor 6: entry vetoes fail CLOSED when a provider timed out ───────
+
+def test_index_confirm_fails_open_when_the_vwap_is_legitimately_absent():
+    """No provider at all → no VWAP → the gate must not block (today's
+    behaviour, unchanged)."""
+    ctx = mc.get_spy_index_context(schwab_provider=None)
+    assert ctx.spy_session_vwap is None
+    assert ctx.provider_timeout is False
+    assert ctx.is_above_vwap is True
+    assert ctx.passes_index_confirm is (ctx.spy_change_vs_prior_close >= 0.0)
+
+
+def test_index_confirm_fails_closed_when_the_vwap_fetch_timed_out():
+    ctx = mc.get_spy_index_context(schwab_provider=HangingProvider())
+    assert ctx.spy_session_vwap is None
+    assert ctx.provider_timeout is True
+    assert ctx.is_above_vwap is False
+    assert ctx.passes_index_confirm is False
+    assert ctx.source == "timeout"
+
+
+def test_rs_from_open_fails_open_when_the_quote_is_legitimately_absent():
+    """The caller's rule is `rs_from_open is None → fail open`; a provider
+    that simply has no RTH open must keep that behaviour."""
+    class NoOpenProvider:
+        def get_quote(self, symbol):
+            return {"netPercentChange": 1.0}          # no 'open' field
+
+        def get_market_data(self, symbol, **kwargs):
+            return pd.DataFrame()
+
+    spy_ctx = mc.get_spy_index_context(schwab_provider=None)
+    ctx = mc.get_rs_from_open_context(
+        "NVDA", sym_last=100.0, rs_prior_close=0.0,
+        spy_ctx=spy_ctx, schwab_provider=NoOpenProvider(),
+    )
+    assert ctx.rs_from_open is None
+    assert ctx.provider_timeout is False
+    assert ctx.source == "unavailable"
+
+
+def test_rs_from_open_fails_closed_when_the_quote_timed_out():
+    """A timeout must BLOCK the entry. The caller treats None as fail-open, so
+    the context presents a value that cannot pass any floor, tagged as a
+    timeout for the audit."""
+    spy_ctx = mc.get_spy_index_context(schwab_provider=None)
+    ctx = mc.get_rs_from_open_context(
+        "NVDA", sym_last=100.0, rs_prior_close=0.0,
+        spy_ctx=spy_ctx, schwab_provider=HangingProvider(),
+    )
+    assert ctx.provider_timeout is True
+    assert ctx.source == "timeout"
+    assert ctx.rs_from_open is not None
+    assert ctx.rs_from_open == pytest.approx(mc.RS_TIMEOUT_SENTINEL)
+    assert ctx.has_rs_from_open is True
+    # Whatever the configured floor is, a timeout cannot pass it.
+    from core.config import Config
+    assert ctx.rs_from_open < Config().MOMENTUM_MIN_RS_VS_SPY

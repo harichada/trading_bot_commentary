@@ -24,6 +24,11 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
+# v-wedge-fix-2026-09-28 fix round 2: bounded broker call. A timeout means "we
+# could not confirm the broker leg", which the existing handler already maps to
+# (False, "fetch_error") — never to "the leg is gone".
+from core.provider_calls import broker_call
+
 if TYPE_CHECKING:
     from core.engine import TradingEngineWithCommentary
     from core.models import Position
@@ -279,7 +284,10 @@ async def is_broker_leg_authoritative(
         return (False, "no_client")
 
     try:
-        response = engine.schwab_client.get_order(bracket_id, engine.account_hash)
+        response = await broker_call(
+            engine.schwab_client.get_order, bracket_id, engine.account_hash,
+            site="broker_leg_authority",
+        )
         if response.status_code != 200:
             logger.debug(
                 "broker_leg_authority_check: could not fetch bracket %s: %d",

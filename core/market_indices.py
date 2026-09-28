@@ -30,6 +30,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+# v-wedge-fix-2026-09-28 fix round 2 (Important 2): `refresh` is called from the
+# engine loop every 10s with a synchronous Schwab batch-quote call that had no
+# timeout at all. The strip it feeds is cosmetic; the loop it blocks is not.
+from core.provider_calls import BrokerTimeoutError, broker_call_sync, broker_timeout
+
 logger = logging.getLogger("TradingBot")
 
 # Module-level singleton.
@@ -112,21 +117,40 @@ class MarketIndicesCache:
         global _INSTANCE
         _INSTANCE = None
 
-    def refresh(self, schwab_client) -> None:
+    def refresh(self, schwab_client, timeout: Optional[float] = None) -> None:
         """Pull the latest quotes from Schwab in one batched call.
 
         Best-effort: per-symbol parse failures keep the prior value.
         Only a transport-level failure (non-200, exception) clears
         ``last_updated`` (via the absence of an update). A single bad
         response should not blank the entire strip.
+
+        v-wedge-fix-2026-09-28 fix round 2: the fetch is bounded. `timeout`
+        defaults to the broker budget, but the engine loop passes the (much
+        tighter) quote budget because this refresh is cosmetic and sits on the
+        critical loop. On timeout the previous snapshot is kept untouched and
+        `last_error` says so — a stale strip is strictly better than a stalled
+        engine.
         """
         symbols = list(_DISPLAY_NAMES.keys())
+        budget = broker_timeout() if timeout is None else float(timeout)
         try:
-            response = schwab_client.get_quotes(symbols)
+            response = broker_call_sync(
+                schwab_client.get_quotes, symbols,
+                timeout=budget, site="market_indices_quotes",
+            )
             if getattr(response, "status_code", None) != 200:
                 self.last_error = f"http_{getattr(response, 'status_code', 'unknown')}"
                 return
             data = response.json()
+        except BrokerTimeoutError:
+            # Keep the previous snapshot; only the error field changes.
+            self.last_error = f"timeout_{budget:.0f}s"
+            logger.warning(
+                "market_indices: refresh timed out after %.1fs — keeping the "
+                "previous snapshot", budget,
+            )
+            return
         except Exception as exc:
             self.last_error = f"fetch_error: {str(exc)[:200]}"
             logger.debug("market_indices: refresh failed: %s", exc)

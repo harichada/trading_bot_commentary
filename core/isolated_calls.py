@@ -168,6 +168,12 @@ def is_ready() -> bool:
     return _ready.is_set()
 
 
+def current_generation() -> int:
+    """The live pool's generation. Bumped on creation AND on teardown, so a
+    callback holding an older number knows its pool is gone."""
+    return _generation
+
+
 def probe_failed() -> bool:
     """True when the last readiness probe raised in the child."""
     return _probe_failed.is_set()
@@ -214,10 +220,15 @@ def shutdown_pool(reason: str) -> None:
     walk the pool's children and KILL them. Anything less leaves the wedge
     in place, which is the entire failure we are fixing.
     """
-    global _pool
+    global _pool, _generation
     with _lock:
         pool, _pool = _pool, None
         _ready.clear()
+        # v-wedge-fix-2026-09-28 fix round 2 (Minor 5): invalidate the
+        # generation here, not only on the next creation. Between a teardown
+        # and the next `get_pool()` the dead pool's probe can still fire, and
+        # it must not be able to report unavailability for a pool nobody owns.
+        _generation += 1
     if pool is None:
         return
     logger.warning("isolated_calls: tearing down spawn pool reason=%s", reason)

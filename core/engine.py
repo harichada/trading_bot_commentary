@@ -35,6 +35,9 @@ from core.calculations import CalculationEngine, PnLResult
 # inline on the event loop — every one goes through the bounded helper.
 # The heartbeat makes a stalled loop visible in the log.
 from core.provider_calls import (
+    BrokerTimeoutError,
+    broker_call,
+    broker_call_sync,
     history_timeout as provider_history_timeout,
     provider_call,
     provider_call_sync,
@@ -1458,7 +1461,14 @@ class TradingEngineWithCommentary:
                 importance=9
             ))
             
-            response = self.schwab_client.place_order(self.account_hash, order)
+            # v-wedge-fix-2026-09-28 fix round 2: bounded. On timeout this
+            # RAISES BrokerTimeoutError (handled below) instead of returning
+            # None — after a timeout we do not know whether Schwab accepted
+            # the order, and "None" would read as "not placed".
+            response = await broker_call(
+                self.schwab_client.place_order, self.account_hash, order,
+                site="place_order_entry",
+            )
 
             if response.status_code in [200, 201]:
                 # Extract order ID from Location header
@@ -1728,6 +1738,30 @@ class TradingEngineWithCommentary:
             self.stop_trading = True
             raise
             
+        except BrokerTimeoutError as e:
+            # v-wedge-fix-2026-09-28 fix round 2: the order call did not answer.
+            # The order may or may not be live at Schwab, so we do NOT retry —
+            # _check_order_status / _verify_order_fill will discover a fill if
+            # there was one. Loud audit, no position created.
+            self._audit("order_execution", signal.symbol, "abort",
+                        "broker_timeout_entry",
+                        site=e.site, timeout_sec=e.timeout,
+                        side=signal.signal_type.name)
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title="⏱️ Broker Timeout on Entry",
+                message=(
+                    f"Schwab did not answer the order call within "
+                    f"{e.timeout:.0f}s. NOT retrying — order state unknown; "
+                    f"the order-status check will reconcile."
+                ),
+                importance=10,
+            ))
+            logger.error("broker_timeout_entry symbol=%s: %s", signal.symbol, e)
+            return False
+
         except Exception as e:
             # Unknown error - log details for debugging
             self.commentary.add_commentary(TradingCommentary(
@@ -1772,10 +1806,12 @@ class TradingEngineWithCommentary:
     async def _check_existing_orders(self, symbol: str) -> Dict[str, Any]:
         """Check for existing orders on a symbol"""
         try:
-            response = self.schwab_client.get_orders_for_account(
+            response = await broker_call(
+                self.schwab_client.get_orders_for_account,
                 self.account_hash,
                 from_entered_datetime=datetime.now() - timedelta(days=1),
-                status=self.schwab_client.Order.Status.WORKING  # Only active orders
+                status=self.schwab_client.Order.Status.WORKING,  # Only active orders
+                site="get_orders_existing",
             )
             
             if response.status_code == 200:
@@ -1838,7 +1874,11 @@ class TradingEngineWithCommentary:
                             # is (order_id, account_hash). Was passing
                             # (account_id, order_id) — wrong arg order AND
                             # account_id instead of account_hash.
-                            response = self.schwab_client.cancel_order(order_id, self.account_hash)
+                            response = await broker_call(
+                                self.schwab_client.cancel_order,
+                                order_id, self.account_hash,
+                                site="cancel_existing_order",
+                            )
                             if response.status_code in [200, 201, 202]:
                                 logger.info(f"Canceled order {order_id}")
                         except Exception as e:
@@ -1900,7 +1940,10 @@ class TradingEngineWithCommentary:
                 return self._cached_buying_power >= required_amount, self._cached_buying_power
             
             # Fetch fresh data
-            response = self.schwab_client.get_account(self.account_hash)
+            response = await broker_call(
+                self.schwab_client.get_account, self.account_hash,
+                site="get_account_buying_power",
+            )
             logger.info(f" Buying power check: {response.json()}")
             if response.status_code != 200:
                 logger.error(f"Failed to get account data: {response.status_code}")
@@ -2157,7 +2200,11 @@ class TradingEngineWithCommentary:
             oco_order = one_cancels_other(take_profit_order, stop_loss_order)
 
             # Build and place the OCO order
-            response = self.schwab_client.place_order(self.account_hash, oco_order.build())
+            response = await broker_call(
+                self.schwab_client.place_order,
+                self.account_hash, oco_order.build(),
+                site="place_order_bracket",
+            )
             logger.info(
                 "bracket_response symbol=%s http=%s body=%s",
                 signal.symbol, response.status_code, response.text[:200],
@@ -2311,7 +2358,10 @@ class TradingEngineWithCommentary:
             # Position, never called _place_bracket_orders. Every trade
             # since the bot was written exited via external_close because
             # of this one swap.
-            response = self.schwab_client.get_order(order_id, self.account_hash)
+            response = await broker_call(
+                self.schwab_client.get_order, order_id, self.account_hash,
+                site="get_order_specific",
+            )
 
             if response.status_code == 200:
                 order_info = response.json()
@@ -2473,7 +2523,10 @@ class TradingEngineWithCommentary:
         # return True so the Position gets created.
         try:
             # v-schwab-arg-order-2026-05-18: cancel_order(order_id, account_hash)
-            self.schwab_client.cancel_order(order_id, self.account_hash)
+            await broker_call(
+                self.schwab_client.cancel_order, order_id, self.account_hash,
+                site="cancel_unfilled_order",
+            )
             # v-autocancel-logging-2026-05-26: prior version silently
             # cancelled unfilled limit orders after the verify window
             # with NO log line on the success path. QBTS 2026-05-26 09:37
@@ -2517,10 +2570,11 @@ class TradingEngineWithCommentary:
         for order_id, order_data in list(self.pending_orders.items()):
             try:
                 # v-schwab-arg-order-2026-05-18: get_order(order_id, account_hash)
-                response = self.schwab_client.get_order(
+                response = await broker_call(
+                    self.schwab_client.get_order,
                     order_id,
                     self.account_hash,
-                    #fields=[schwab_client.Orders.Fields.EXECUTION_LEGS]
+                    site="get_order_pending",
                 )
                 
                 if response.status_code == 200:
@@ -2721,8 +2775,11 @@ class TradingEngineWithCommentary:
             
             order = order_builder.build()
             
-            response = self.schwab_client.place_order(self.account_hash, order)
-            
+            response = await broker_call(
+                self.schwab_client.place_order, self.account_hash, order,
+                site="place_order_close",
+            )
+
             if response.status_code in [200, 201]:
                 order_id = response.headers.get('Location', '').split('/')[-1]
 
@@ -2807,6 +2864,30 @@ class TradingEngineWithCommentary:
                 ))
                 return False
                 
+        except BrokerTimeoutError as e:
+            # v-wedge-fix-2026-09-28 fix round 2: the close order call did not
+            # answer. Leave the position exactly as it is and try again next
+            # cycle — its GTC OCO is still resting at the broker, so the stop
+            # and target remain live while we are unsure about this close.
+            self._audit("position_manager", position.symbol, "hold",
+                        "broker_timeout_close",
+                        site=e.site, timeout_sec=e.timeout,
+                        qty=getattr(position, 'quantity', 0))
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title="⏱️ Broker Timeout on Close",
+                message=(
+                    f"Schwab did not answer the close order within "
+                    f"{e.timeout:.0f}s. Position kept (its bracket is still "
+                    f"resting at the broker); retrying next cycle."
+                ),
+                importance=10,
+            ))
+            logger.error("broker_timeout_close symbol=%s: %s", position.symbol, e)
+            return False
+
         except Exception as e:
             logger.error(f"Position close error: {e}")
             return False
@@ -3053,10 +3134,12 @@ class TradingEngineWithCommentary:
             to_time = datetime.now()
             
             # Get orders for today
-            response = self.schwab_client.get_orders_for_account(
+            response = broker_call_sync(
+                self.schwab_client.get_orders_for_account,
                 self.account_hash,
                 from_entered_datetime=from_time,
-                to_entered_datetime=to_time
+                to_entered_datetime=to_time,
+                site="get_orders_today",
             )
             
             if response.status_code == 200:
@@ -3566,7 +3649,14 @@ class TradingEngineWithCommentary:
         while self.is_running:
             try:
                 if self.schwab_client is not None:
-                    cache.refresh(self.schwab_client)
+                    # v-wedge-fix-2026-09-28 fix round 2: the strip is
+                    # cosmetic and this runs on the engine loop every 10s, so
+                    # it gets the QUOTE budget rather than the 15s broker one.
+                    # On timeout refresh keeps the previous snapshot.
+                    cache.refresh(
+                        self.schwab_client,
+                        timeout=Config().QUOTE_FETCH_TIMEOUT_SEC,
+                    )
             except Exception as exc:
                 logger.debug("market_indices_loop iteration failed: %s", exc)
             await asyncio.sleep(_REFRESH_SEC)
@@ -10292,16 +10382,14 @@ class TradingEngineWithCommentary:
         try:
             # Get account with positions to ensure we have all data
             from schwab.client import Client
-            loop = asyncio.get_running_loop()
-            response = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: self.schwab_client.get_account(
-                        self.account_hash,
-                        fields=[Client.Account.Fields.POSITIONS],
-                    ),
-                ),
+            # v-wedge-fix-2026-09-28 fix round 2: same 6s budget, on the
+            # dedicated executor, raising BrokerTimeoutError (caught below).
+            response = await broker_call(
+                self.schwab_client.get_account,
+                self.account_hash,
+                fields=[Client.Account.Fields.POSITIONS],
                 timeout=6.0,
+                site="get_account_info",
             )
             
             if response.status_code != 200:
@@ -10388,16 +10476,12 @@ class TradingEngineWithCommentary:
             return []
         
         try:
-            loop = asyncio.get_running_loop()
-            response = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: self.schwab_client.get_account(
-                        self.account_hash,
-                        fields=[self.schwab_client.Account.Fields.POSITIONS],
-                    ),
-                ),
+            response = await broker_call(
+                self.schwab_client.get_account,
+                self.account_hash,
+                fields=[self.schwab_client.Account.Fields.POSITIONS],
                 timeout=6.0,
+                site="get_account_positions",
             )
             
             if response.status_code == 200:
