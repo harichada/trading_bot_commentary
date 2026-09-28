@@ -99,8 +99,12 @@ log() {
     line="$(date -Iseconds) bot_watchdog $*"
     if [[ "$DRY_RUN" -eq 1 ]]; then
         echo "$line"
-    else
+    elif [[ -t 1 ]]; then
         echo "$line" | tee -a "$LOG"
+    else
+        # Under cron stdout is already redirected into $LOG: writing both
+        # ways doubled every line.
+        echo "$line" >> "$LOG"
     fi
 }
 
