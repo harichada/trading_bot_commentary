@@ -54,6 +54,16 @@ BOT_SCRIPT="trading_bot_commentary_updated.py"
 PYTHON_BIN="${PYTHON_BIN:-/home/nvidia/anaconda3/envs/trading-bot/bin/python}"
 LOG="${WATCHDOG_LOG:-bot_watchdog.log}"
 STATE="${WATCHDOG_STATE:-bot_watchdog.state}"
+# v-risk-console-2026-09-28: single instance. This repo is one disk mounted
+# by two WSL distros that each run cron, so two watchdogs fired every tick
+# and raced each other into a double relaunch (2026-09-28 14:20 ET). The
+# lock file lives on the shared disk; one kernel serves both distros, so
+# flock excludes the other distro's instance as well.
+LOCKFILE="${WATCHDOG_LOCK:-bot_watchdog.lock}"
+exec 9>"$LOCKFILE" || exit 0
+if ! flock -n 9; then
+    exit 0
+fi
 MAX_RESTARTS_PER_DAY="${WATCHDOG_MAX_RESTARTS:-2}"
 FAILS_BEFORE_RESTART="${WATCHDOG_FAILS_BEFORE_RESTART:-2}"
 CURL_TIMEOUT="${WATCHDOG_CURL_TIMEOUT:-30}"

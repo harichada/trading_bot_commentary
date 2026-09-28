@@ -235,3 +235,21 @@ def test_a_failed_start_or_toggle_escalates(tmp_path):
     assert "OPERATOR ACTION REQUIRED" in block
     assert script.count("OPERATOR ACTION REQUIRED") >= 2
     assert "2[0-9][0-9]" in block or "is_2xx" in block
+
+
+def test_watchdog_second_instance_exits_quietly(tmp_path):
+    """Two crons (two WSL distros over one disk) must not run the watchdog twice."""
+    import os, subprocess, textwrap
+    script = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "bot_watchdog.sh")
+    lock = tmp_path / "wd.lock"
+    holder = subprocess.Popen(["bash", "-c", f"exec 9>'{lock}'; flock 9; sleep 5"])
+    try:
+        import time; time.sleep(0.5)
+        env = dict(os.environ, WATCHDOG_LOCK=str(lock), WATCHDOG_LOG=str(tmp_path / "wd.log"),
+                   WATCHDOG_STATE=str(tmp_path / "wd.state"))
+        r = subprocess.run(["bash", script, "--dry-run"], env=env, cwd=str(tmp_path),
+                           capture_output=True, text=True, timeout=20)
+        assert r.returncode == 0
+        assert r.stdout.strip() == "" and "health" not in r.stdout
+    finally:
+        holder.kill()

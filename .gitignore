@@ -79,3 +79,4 @@ bot_watchdog.state
 .env.bak_*
 .env.tmp
 Config().yaml.*
+bot_watchdog.lock
