@@ -80,3 +80,4 @@ bot_watchdog.state
 .env.tmp
 Config().yaml.*
 bot_watchdog.lock
+bot_watchdog.lastrun

@@ -64,6 +64,17 @@ exec 9>"$LOCKFILE" || exit 0
 if ! flock -n 9; then
     exit 0
 fi
+# The health check finishes in under a second, so the other distro's cron
+# job (fired the same minute) would take the lock right after us and run a
+# second time. Skip when a run completed within the last 60 s.
+LASTRUN="${WATCHDOG_LASTRUN:-bot_watchdog.lastrun}"
+if [[ -f "$LASTRUN" ]]; then
+    last="$(cat "$LASTRUN" 2>/dev/null || echo 0)"
+    if [[ "$last" =~ ^[0-9]+$ ]] && (( $(date +%s) - last < 60 )); then
+        exit 0
+    fi
+fi
+date +%s > "$LASTRUN"
 MAX_RESTARTS_PER_DAY="${WATCHDOG_MAX_RESTARTS:-2}"
 FAILS_BEFORE_RESTART="${WATCHDOG_FAILS_BEFORE_RESTART:-2}"
 CURL_TIMEOUT="${WATCHDOG_CURL_TIMEOUT:-30}"
