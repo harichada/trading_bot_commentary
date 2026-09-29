@@ -29,11 +29,19 @@ class TradingStrategyWithCommentary(ABC):
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         ...
 
+    _LOG_DECISION_RESERVED_KEYS = frozenset({
+        "action", "reason", "market_data", "gate_name", "confidence",
+        "would_entry_price", "would_stop_loss", "would_take_profit",
+        "would_size_shares", "would_size_mult", "news_aggregate",
+        "news_gate_result", "regime_context", "skip_snapshot",
+    })
+
     def _log_decision(
         self,
         market_data,
         action: str,
         reason: str,
+        /,
         gate_name: Optional[str] = None,
         confidence: float = 0.0,
         would_entry_price: Optional[float] = None,
@@ -60,7 +68,21 @@ class TradingStrategyWithCommentary(ABC):
         for informational logs (like news_gate intermediate checks, size_reduced)
         that should not emit ML snapshots. Only the final decision point should
         emit the snapshot to avoid double-emit causing connection exhaustion.
+        
+        v-log-decision-collision-fix-2026-09-22: Use positional-only parameters (/)
+        to prevent TypeError when callers accidentally pass colliding kwargs like
+        reason=. Reserved keys in **details are popped and nested under _extra
+        for observability. Positional params always win over colliding kwargs.
+        Matches _audit() pattern in core/engine.py.
         """
+        collisions = {
+            k: details.pop(k)
+            for k in list(details.keys())
+            if k in self._LOG_DECISION_RESERVED_KEYS
+        }
+        if collisions:
+            details["_extra"] = collisions
+
         symbol = getattr(market_data, "symbol", "?")
         close = getattr(market_data, "close", None)
         kv = " ".join(f"{k}={v}" for k, v in details.items())
