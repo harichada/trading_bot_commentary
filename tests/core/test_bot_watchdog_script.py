@@ -27,6 +27,10 @@ def _run(args, tmp_path, extra_env=None, timeout=120):
         "WATCHDOG_CURL_TIMEOUT": "2",
         "WATCHDOG_LOG": str(tmp_path / "wd.log"),
         "WATCHDOG_STATE": str(tmp_path / "wd.state"),
+        # The script cds into the repo: isolate its lock and last-run
+        # files too, or a cron run seconds earlier makes every test a no-op.
+        "WATCHDOG_LOCK": str(tmp_path / "wd.lock"),
+        "WATCHDOG_LASTRUN": str(tmp_path / "wd.lastrun"),
     })
     env.update(extra_env or {})
     return subprocess.run(
