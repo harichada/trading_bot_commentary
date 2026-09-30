@@ -257,3 +257,31 @@ def test_ceiling_lower_is_immediate(tmp_path):
     cfg = FakeCfg(); cfg.ALLOCATION_CEILING = 5000.0
     r = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 4000, now=_mon(), actor="t", reason="", hard_cap=48000)
     assert r.status == "applied" and m.data["trading.settings_console.allocation_ceiling"] == 4000.0
+
+
+def test_allocation_can_be_queued_against_a_pending_ceiling(tmp_path):
+    """Raising capital is one sitting: ceiling then allocation, both pending;
+    promotion applies the ceiling first and the allocation re-check passes."""
+    m = FakeManager({"trading.settings_console.allocation_ceiling": 5000})
+    cfg = FakeCfg(); cfg.ALLOCATION_CEILING = 5000.0
+    r = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 25000, now=_mon(), actor="t", reason="", hard_cap=48000)
+    assert r.status == "pending"
+    r = store.submit_change(m, cfg, str(tmp_path), "bot_capital_allocation", 25000, now=_mon(), actor="t", reason="")
+    assert r.status == "pending"
+    r = store.submit_change(m, cfg, str(tmp_path), "bot_capital_allocation", 30000, now=_mon(), actor="t", reason="")
+    assert r.status == "rejected"
+    applied = store.promote_pending(m, str(tmp_path), now=datetime(2026, 9, 29, 9, 30, tzinfo=ET))
+    assert [a["key"] for a in applied] == ["allocation_ceiling", "bot_capital_allocation"]
+    assert m.data["trading.bot_capital_allocation"] == 25000.0
+    assert store.list_pending(str(tmp_path)) == []
+
+
+def test_cancelled_ceiling_drops_allocation_at_promotion(tmp_path):
+    m = FakeManager({"trading.settings_console.allocation_ceiling": 5000})
+    cfg = FakeCfg(); cfg.ALLOCATION_CEILING = 5000.0
+    r1 = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 25000, now=_mon(), actor="t", reason="", hard_cap=48000)
+    store.submit_change(m, cfg, str(tmp_path), "bot_capital_allocation", 25000, now=_mon(), actor="t", reason="")
+    assert store.cancel_pending(str(tmp_path), r1.pending_id, now=_mon(), actor="t")
+    applied = store.promote_pending(m, str(tmp_path), now=datetime(2026, 9, 29, 9, 30, tzinfo=ET))
+    assert applied == [] and "trading.bot_capital_allocation" not in m.data
+    assert store.read_audit(str(tmp_path))[-1]["event"] == "promotion_rejected"

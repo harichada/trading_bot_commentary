@@ -215,13 +215,31 @@ def _rejected(desk_dir: str, now: datetime, actor: str, key: str, raw_value: Any
     return ChangeResult("rejected", key, None, raw_value, "", "", "", reason)
 
 
-def ceiling_for(knob: Any, manager: Any, hard_cap: float | None) -> float:
-    """The upper bound `coerce` applies: the yaml ceiling for the allocation,
-    and for the ceiling knob itself the account equity (`hard_cap`, resolved
-    by the caller from the broker) or the yaml fallback. Raises ValueError
-    when the ceiling would be raised with no known equity."""
+def _pending_ceiling(desk_dir: str | None) -> float | None:
+    """A queued (not yet promoted) raise of the ceiling, if any."""
+    if not desk_dir:
+        return None
+    for row in list_pending(desk_dir):
+        if row.get("key") == ALLOCATION_CEILING_KEY:
+            try:
+                return float(row.get("new"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def ceiling_for(knob: Any, manager: Any, hard_cap: float | None,
+                desk_dir: str | None = None) -> float:
+    """The upper bound `coerce` applies: for the allocation the yaml ceiling
+    or a pending raise of it (so ceiling and allocation can be queued in one
+    sitting; promotion applies the ceiling row first and re-checks); for the
+    ceiling knob itself the account equity (`hard_cap`, resolved by the
+    caller from the broker) or the yaml fallback. Raises ValueError when the
+    ceiling would be raised with no known equity."""
     if knob.key != ALLOCATION_CEILING_KEY:
-        return float(manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING))
+        current = float(manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING))
+        pending = _pending_ceiling(desk_dir)
+        return max(current, pending) if pending is not None else current
     cap = hard_cap if hard_cap is not None else manager.get(ALLOCATION_HARD_CAP_PATH, None)
     try:
         cap = float(cap)
@@ -249,7 +267,7 @@ def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: An
         return _rejected(desk_dir, now, actor, key, raw_value, msg)
 
     try:
-        ceiling = ceiling_for(knob, manager, hard_cap)
+        ceiling = ceiling_for(knob, manager, hard_cap, desk_dir)
         new = coerce(knob, raw_value, ceiling=ceiling)
     except ValueError as exc:
         return _rejected(desk_dir, now, actor, key, raw_value, str(exc))
@@ -368,6 +386,9 @@ def promote_pending(manager: Any, desk_dir: str, *, now: datetime) -> list[dict]
     try:
         with _locked(desk_dir):
             rows = list_pending(desk_dir)
+            # Ceiling first: an allocation queued against a pending ceiling
+            # must re-validate after that ceiling has landed.
+            rows = sorted(rows, key=lambda r: 0 if r.get("key") == ALLOCATION_CEILING_KEY else 1)
             applied: list[dict] = []
             remaining: list[dict] = []
             for row in rows:
