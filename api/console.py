@@ -23,7 +23,8 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from core.settings_console import (ALLOCATION_CEILING_PATH,
+from core.settings_console import (ALLOCATION_CEILING_KEY, ALLOCATION_CEILING_PATH,
+                                    ALLOCATION_HARD_CAP_PATH,
                                     DEFAULT_ALLOCATION_CEILING, KNOBS,
                                     effective_value, env_shadowed, yaml_value)
 from core.settings_console_store import (cancel_pending, list_pending,
@@ -45,6 +46,24 @@ def _manager() -> Any:
 def _cfg() -> Any:
     from core.config import Config
     return Config()
+
+
+def _hard_cap(manager: Any) -> float | None:
+    """The account equity the broker last reported (the bound on the
+    allocation ceiling), else the yaml fallback, else None."""
+    try:
+        import api.routes as routes
+        engine = routes.trading_engine
+        equity = float(getattr(getattr(engine, "risk_manager", None), "schwab_equity", 0) or 0)
+        if equity > 0:
+            return equity
+    except Exception:  # pragma: no cover - engine shape is not ours to assume
+        pass
+    try:
+        fallback = float(manager.get(ALLOCATION_HARD_CAP_PATH, 0) or 0)
+        return fallback if fallback > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _now():
@@ -72,11 +91,16 @@ def _knob_row(knob, manager: Any, cfg: Any, pending_by_key: dict) -> dict:
     value = effective_value(cfg, knob)
     if value is None:
         value = yaml_value(manager, knob)
+    maximum = knob.maximum
+    if knob.key == ALLOCATION_CEILING_KEY:
+        maximum = _hard_cap(manager)
+    elif knob.key == "bot_capital_allocation":
+        maximum = float(manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING))
     return {
         "key": knob.key, "label": knob.label, "group": knob.group,
         "kind": knob.kind, "value": value, "yaml_value": yaml_value(manager, knob),
         "env_shadowed": env_shadowed(knob), "restart_required": knob.restart_required,
-        "minimum": knob.minimum, "maximum": knob.maximum,
+        "minimum": knob.minimum, "maximum": maximum,
         "allowed": list(knob.allowed), "pending": pending_out,
     }
 
@@ -110,6 +134,7 @@ def get_console() -> Any:
         return {
             "ok": True, "block_new_entries": bool(cfg.BLOCK_NEW_ENTRIES),
             "allocation_ceiling": float(ceiling),
+            "allocation_hard_cap": _hard_cap(manager),
             "promote_time_et": cfg.SETTINGS_PROMOTE_TIME_ET,
             # Pending loosens are promoted by the desk loop; without it they
             # would sit "pending" forever (final review I1).
@@ -128,7 +153,8 @@ def put_console(key: str, body: dict) -> Any:
     desk_dir = cfg.DESK_DATA_DIR
     reason = _reason(body)
     result = submit_change(manager, cfg, desk_dir, key, body.get("value"),
-                            now=_now(), actor=_ACTOR, reason=reason)
+                            now=_now(), actor=_ACTOR, reason=reason,
+                            hard_cap=_hard_cap(manager))
     result_dict = asdict(result)
     if result.status != "rejected":
         _engine_audit(result.status, key, direction=result.direction)

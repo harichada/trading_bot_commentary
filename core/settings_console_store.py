@@ -31,7 +31,8 @@ from typing import Any, Iterator
 
 from core.settings_console_rules import (PROMOTE_TIME_ET, candidate_error,  # noqa: F401
                                          next_promotion, promote_time_of)
-from core.settings_console import (ALLOCATION_CEILING_PATH,
+from core.settings_console import (ALLOCATION_CEILING_KEY, ALLOCATION_CEILING_PATH,
+                                   ALLOCATION_HARD_CAP_PATH,
                                     DEFAULT_ALLOCATION_CEILING, KNOB_BY_KEY,
                                     classify, coerce, effective_value,
                                     env_shadowed, yaml_value)
@@ -214,8 +215,27 @@ def _rejected(desk_dir: str, now: datetime, actor: str, key: str, raw_value: Any
     return ChangeResult("rejected", key, None, raw_value, "", "", "", reason)
 
 
+def ceiling_for(knob: Any, manager: Any, hard_cap: float | None) -> float:
+    """The upper bound `coerce` applies: the yaml ceiling for the allocation,
+    and for the ceiling knob itself the account equity (`hard_cap`, resolved
+    by the caller from the broker) or the yaml fallback. Raises ValueError
+    when the ceiling would be raised with no known equity."""
+    if knob.key != ALLOCATION_CEILING_KEY:
+        return float(manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING))
+    cap = hard_cap if hard_cap is not None else manager.get(ALLOCATION_HARD_CAP_PATH, None)
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        cap = 0.0
+    if cap <= 0:
+        raise ValueError("account equity unknown; the ceiling cannot be changed until the "
+                         "broker reports it (or set trading.settings_console.allocation_hard_cap)")
+    return cap
+
+
 def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: Any, *,
-                   now: datetime, actor: str, reason: str) -> ChangeResult:
+                   now: datetime, actor: str, reason: str,
+                   hard_cap: float | None = None) -> ChangeResult:
     """Validate and classify a change; apply tightens immediately, queue
     loosens until the next session open."""
     knob = KNOB_BY_KEY.get(key)
@@ -228,8 +248,8 @@ def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: An
                f"is ignored until it is removed")
         return _rejected(desk_dir, now, actor, key, raw_value, msg)
 
-    ceiling = manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING)
     try:
+        ceiling = ceiling_for(knob, manager, hard_cap)
         new = coerce(knob, raw_value, ceiling=ceiling)
     except ValueError as exc:
         return _rejected(desk_dir, now, actor, key, raw_value, str(exc))
@@ -237,6 +257,8 @@ def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: An
     old = effective_value(cfg, knob)
     if old is None:
         old = yaml_value(manager, knob)
+    if old is None and knob.key == ALLOCATION_CEILING_KEY:
+        old = DEFAULT_ALLOCATION_CEILING   # what every reader assumes when the key is absent
     direction = classify(knob, old, new)
     stored = list(new) if knob.kind == "csv" else new
 
@@ -251,7 +273,8 @@ def submit_change(manager: Any, cfg: Any, desk_dir: str, key: str, raw_value: An
         _audit(desk_dir, now, actor, "applied", key, old, stored, direction, "", reason)
         return ChangeResult("applied", key, old, stored, direction, "", "", reason)
     return _queue_loosen(desk_dir, now, actor, key, old, stored, direction, reason,
-                         promote_time_of(cfg))
+                         promote_time_of(cfg),
+                         hard_cap=ceiling if knob.key == ALLOCATION_CEILING_KEY else None)
 
 
 def _cancel_pending_for_key(desk_dir: str, now: datetime, actor: str, key: str) -> None:
@@ -270,7 +293,8 @@ def _cancel_pending_for_key(desk_dir: str, now: datetime, actor: str, key: str) 
 
 def _queue_loosen(desk_dir: str, now: datetime, actor: str, key: str, old: Any, stored: Any,
                    direction: str, reason: str,
-                   promote_time: tuple[int, int] = PROMOTE_TIME_ET) -> ChangeResult:
+                   promote_time: tuple[int, int] = PROMOTE_TIME_ET,
+                   hard_cap: float | None = None) -> ChangeResult:
     effective_at = next_promotion(now, promote_time).isoformat()
     pending_id = uuid.uuid4().hex[:12]
     row = {
@@ -282,6 +306,7 @@ def _queue_loosen(desk_dir: str, now: datetime, actor: str, key: str, old: Any, 
         "effective_at": effective_at,
         "actor": actor,
         "reason": reason,
+        "hard_cap": hard_cap,
     }
     with _locked(desk_dir):
         rows = [r for r in list_pending(desk_dir) if r.get("key") != key]
@@ -314,8 +339,8 @@ def _promote_row(manager: Any, desk_dir: str, now: datetime, row: dict) -> str:
         return "keep"
     # Re-validate against TODAY's ceiling and config band: the row was checked
     # when it was queued, and the world may have moved since (I4).
-    ceiling = manager.get(ALLOCATION_CEILING_PATH, DEFAULT_ALLOCATION_CEILING)
     try:
+        ceiling = ceiling_for(knob, manager, row.get("hard_cap"))
         value = coerce(knob, row.get("new"), ceiling=ceiling)
     except ValueError as exc:
         problem = str(exc)

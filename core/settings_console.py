@@ -31,6 +31,10 @@ class Knob:
 
 
 ALLOCATION_CEILING_PATH = "trading.settings_console.allocation_ceiling"
+# Absolute bound on the ceiling itself: the broker's reported equity at the
+# time of the request (resolved by the API), or this yaml fallback.
+ALLOCATION_HARD_CAP_PATH = "trading.settings_console.allocation_hard_cap"
+ALLOCATION_CEILING_KEY = "allocation_ceiling"
 DEFAULT_ALLOCATION_CEILING = 5000.0
 
 KNOWN_FIT_FAMILIES = (
@@ -46,6 +50,16 @@ KNOBS: tuple[Knob, ...] = (
         key="bot_capital_allocation", yaml_path="trading.bot_capital_allocation",
         env_name="BOT_CAPITAL_ALLOCATION", kind="money", group="risk",
         label="Bot capital allocation", loosen="increase", minimum=0.0,
+    ),
+    Knob(
+        # v-risk-console-2026-09-30: the ceiling is editable too (user asked
+        # for a way to raise the capital from the settings page). Raising it
+        # is a loosen (next-open), bounded by the account equity the broker
+        # reports; the allocation itself is then raised as a second step.
+        key=ALLOCATION_CEILING_KEY, yaml_path=ALLOCATION_CEILING_PATH,
+        env_name="", kind="money", group="risk",
+        label="Allocation ceiling (max the bot may be given)", loosen="increase",
+        minimum=0.0,
     ),
     Knob(
         key="risk_per_trade_pct", yaml_path="trading.risk_per_trade_pct",
@@ -149,7 +163,8 @@ def _coerce_money(knob: Knob, raw: Any, ceiling: float | None) -> float:
     if not value > floor or value != value:
         raise ValueError(f"{knob.label} must be greater than {floor:g}")
     if value > limit:
-        raise ValueError(f"{knob.label} must not exceed the allocation ceiling of {limit}")
+        bound = "the account equity" if knob.key == ALLOCATION_CEILING_KEY else "the allocation ceiling"
+        raise ValueError(f"{knob.label} must not exceed {bound} of {limit:g}")
     return value
 
 

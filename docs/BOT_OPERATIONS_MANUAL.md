@@ -1579,6 +1579,16 @@ overrides that and is not recommended. Before writing, the script also runs
 backups and temp files (`.env.bak_console_*`, `.env.tmp`,
 `Config().yaml.*`) hold secrets and are git-ignored.
 
+**Raising the capital (2026-09-30).** The allocation ceiling is itself a
+console knob (`allocation_ceiling`, Risk group). Raising it is a loosen
+(applied at the next 09:25), bounded by the account equity the broker last
+reported (`allocation_hard_cap` in the snapshot; yaml fallback
+`trading.settings_console.allocation_hard_cap`). Raising the capital is
+therefore two queued steps: ceiling first, then `bot_capital_allocation` up
+to the new ceiling — both land at the next open, and a raise multiplies the
+per-trade risk dollars (1% of $20,000 is $200 a trade, not $50). Lowering
+either applies immediately.
+
 **Validation band.** Every console write — a tighten applied now or a
 loosen promoted later — is checked against the same validation the config
 loader runs at start-up (`ConfigManager.validate_candidate`: daily loss

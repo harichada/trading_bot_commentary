@@ -167,3 +167,19 @@ def test_snapshot_reports_promotion_enabled(client, monkeypatch):
     cfg.ENABLE_DESK = True
     monkeypatch.setattr(console, "_cfg", lambda: cfg)
     assert client.get("/api/console").json()["promotion_enabled"] is True
+
+
+def test_ceiling_knob_uses_broker_equity_as_its_bound(client, manager, monkeypatch):
+    import api.routes as routes
+    from types import SimpleNamespace
+    monkeypatch.setattr(routes, "trading_engine",
+                        SimpleNamespace(risk_manager=SimpleNamespace(schwab_equity=48000.0),
+                                        _audit=lambda *a, **k: None))
+    snap = client.get("/api/console").json()
+    assert snap["allocation_hard_cap"] == 48000.0
+    row = next(k for k in snap["knobs"] if k["key"] == "allocation_ceiling")
+    assert row["maximum"] == 48000.0 and row["group"] == "risk"
+    r = client.put("/api/console/allocation_ceiling", json={"value": 60000, "reason": "x"})
+    assert r.status_code == 400
+    r = client.put("/api/console/allocation_ceiling", json={"value": 20000, "reason": "more capital"})
+    assert r.status_code == 200 and r.json()["result"]["status"] == "pending"

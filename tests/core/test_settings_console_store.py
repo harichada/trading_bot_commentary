@@ -227,3 +227,33 @@ def test_promote_time_comes_from_cfg(tmp_path):
     assert store.promote_time_of(FakeCfg()) == (9, 25)      # attribute absent → default
     cfg.SETTINGS_PROMOTE_TIME_ET = "garbage"
     assert store.promote_time_of(cfg) == (9, 25)
+
+
+def test_ceiling_knob_raise_is_bounded_by_equity_and_deferred(tmp_path):
+    m = FakeManager({"trading.settings_console.allocation_ceiling": 5000})
+    cfg = FakeCfg(); cfg.ALLOCATION_CEILING = 5000.0
+    # no equity known → cannot change
+    r = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 20000, now=_mon(), actor="t", reason="")
+    assert r.status == "rejected" and "equity unknown" in r.reason
+    # above equity → rejected
+    r = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 60000, now=_mon(), actor="t", reason="", hard_cap=48000)
+    assert r.status == "rejected"
+    # raise within equity → pending, promoted with the equity recorded on the row
+    r = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 20000, now=_mon(), actor="t", reason="more capital", hard_cap=48000)
+    assert r.status == "pending"
+    assert store.list_pending(str(tmp_path))[0]["hard_cap"] == 48000
+    applied = store.promote_pending(m, str(tmp_path), now=datetime(2026, 9, 29, 9, 30, tzinfo=ET))
+    assert [a["key"] for a in applied] == ["allocation_ceiling"]
+    assert m.data["trading.settings_console.allocation_ceiling"] == 20000.0
+    # then the allocation itself can be raised up to the new ceiling (also deferred)
+    r = store.submit_change(m, cfg, str(tmp_path), "bot_capital_allocation", 20000, now=_mon(), actor="t", reason="")
+    assert r.status == "pending"
+    r = store.submit_change(m, cfg, str(tmp_path), "bot_capital_allocation", 25000, now=_mon(), actor="t", reason="")
+    assert r.status == "rejected"
+
+
+def test_ceiling_lower_is_immediate(tmp_path):
+    m = FakeManager({"trading.settings_console.allocation_ceiling": 5000})
+    cfg = FakeCfg(); cfg.ALLOCATION_CEILING = 5000.0
+    r = store.submit_change(m, cfg, str(tmp_path), "allocation_ceiling", 4000, now=_mon(), actor="t", reason="", hard_cap=48000)
+    assert r.status == "applied" and m.data["trading.settings_console.allocation_ceiling"] == 4000.0
