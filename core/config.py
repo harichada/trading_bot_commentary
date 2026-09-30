@@ -262,6 +262,25 @@ class Config:
         return self.manager.get('trading.max_consecutive_losses', 3)
 
     @property
+    def CONSECUTIVE_LOSS_SOFT_ENTRY_VETO(self) -> bool:
+        """v-consec-loss-soft-veto-2026-09-22: when True (default), consecutive-
+        loss check is a SOFT ENTRY VETO instead of a hard analysis block.
+        
+        Analysis / strategy scan / decision logging continues even when
+        consecutive_losses >= MAX_CONSECUTIVE_LOSSES. Only NEW LIVE entries
+        are blocked (same pattern as economic blackout). This prevents the
+        operator from having to manually reset consecutive_losses to unfreeze
+        strategy scans.
+        
+        Set to False to restore the legacy behavior where analysis stops
+        entirely when the threshold is reached.
+        
+        Override: CONSECUTIVE_LOSS_SOFT_ENTRY_VETO=0 env or
+        trading.consecutive_loss_soft_entry_veto: false in Config.yaml
+        """
+        return self.manager.get('trading.consecutive_loss_soft_entry_veto', True)
+
+    @property
     def POSITION_SIZE_KELLY_FRACTION(self):
         return self.manager.get('trading.position_size_kelly_fraction', 0.25)
 
