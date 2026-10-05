@@ -1484,6 +1484,14 @@ it never appears in `ps` or the log.
   1-5 …` line from `crontab -e`. The script itself is inert until cron (or an
   operator) invokes it — nothing else calls it automatically.
 
+> **2026-10-05 — hands-off list is data, not code.** The hands-off denylist no
+> longer has a hard-coded floor. It lives in `Config().yaml` under
+> `trading.hands_off_denylist` (currently HQGE, SPCX), is edited from the
+> dashboard Settings tab or `PUT /api/hands-off-denylist`, and the bot re-reads
+> it on every check. MU was removed at the user's request so the bot can trade
+> it. Remove a symbol only when its external position is closed, or the bot
+> will treat any later position in it as its own to manage.
+
 ### 9.9 Risk Console
 
 The Risk Console (`core/settings_console.py`, `core/settings_console_store.py`,

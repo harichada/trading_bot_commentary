@@ -59,7 +59,17 @@ sys.path.insert(0, str(REPO_ROOT))
 logger = logging.getLogger("day_trade_short_bt_sample")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-HANDS_OFF_SYMBOLS = frozenset({"MU", "HQGE", "SPCX"})
+def _hands_off_from_config() -> frozenset:
+    """v-hands-off-data-2026-10-05: the hands-off list is yaml data
+    (trading.hands_off_denylist), never a literal. Empty when unavailable."""
+    try:
+        from core.config import Config
+        return frozenset(Config().HANDS_OFF_DENYLIST)
+    except Exception:
+        return frozenset()
+
+
+HANDS_OFF_SYMBOLS = _hands_off_from_config()
 DEDUPE_WINDOW_MIN = 15
 DEFAULT_MIN_WEAK_RS = 0.5
 DEFAULT_MIN_VOLUME_RATIO = 1.5

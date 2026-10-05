@@ -416,6 +416,16 @@ def extract_initial_values_from_position(
     return initial_stop, initial_tp, initial_risk
 
 
+def _hands_off_from_config() -> frozenset:
+    """v-hands-off-data-2026-10-05: the hands-off list is yaml data; empty
+    when the config cannot be read."""
+    try:
+        from core.config import Config
+        return frozenset(Config().HANDS_OFF_DENYLIST)
+    except Exception:
+        return frozenset()
+
+
 def build_trade_ledger_entry(
     position: Any,
     exit_price: float,
@@ -447,7 +457,7 @@ def build_trade_ledger_entry(
         TradeLedgerEntry with all fields populated
     """
     if hands_off_denylist is None:
-        hands_off_denylist = frozenset({"MU", "HQGE", "SPCX"})
+        hands_off_denylist = _hands_off_from_config()
     
     symbol = getattr(position, "symbol", "")
     side = getattr(position, "side", "long")
@@ -589,7 +599,7 @@ def build_broker_orphan_entry(
         TradeLedgerEntry with source='broker_orphan' or 'external'
     """
     if hands_off_denylist is None:
-        hands_off_denylist = frozenset({"MU", "HQGE", "SPCX"})
+        hands_off_denylist = _hands_off_from_config()
     
     # Compute P&L
     if side == "long":

@@ -56,7 +56,8 @@ def _get_hands_off_denylist() -> frozenset:
         from core.config import Config
         return Config().HANDS_OFF_DENYLIST
     except Exception:
-        return frozenset({"MU", "HQGE", "SPCX"})
+        from core.config import PERMANENT_HANDS_OFF
+        return PERMANENT_HANDS_OFF
 
 
 def _get_flatten_hour() -> int:

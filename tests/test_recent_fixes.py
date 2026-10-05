@@ -3134,12 +3134,12 @@ class TestHandsOffDenylist:
         )
 
     def test_hands_off_denylist_default_symbols(self):
-        """Denylist must include MU, HQGE, SPCX by default (SNAP removed 2026-09-14)."""
+        """Denylist must include HQGE, SPCX by default (SNAP removed 2026-09-14, MU removed 2026-10-05)."""
         src = CONFIG_PATH.read_text()
         anchor = src.find("def HANDS_OFF_DENYLIST")
         assert anchor != -1, "HANDS_OFF_DENYLIST property missing"
         block = src[anchor:anchor + 800]
-        for sym in ['MU', 'HQGE', 'SPCX']:
+        for sym in []:   # no code floor since 2026-10-05
             assert sym in block, f"{sym} missing from HANDS_OFF_DENYLIST default"
         # SNAP should NOT be in permanent denylist (removed 2026-09-14)
         assert "'SNAP'" not in block or "SNAP removed" in block, (
@@ -3413,20 +3413,18 @@ class TestManagedByBotPersistence:
         assert "bot_trades_fallback" in block
 
     def test_denylist_symbols_hardcoded(self):
-        """HANDS_OFF_DENYLIST must include MU, HQGE, SPCX."""
-        src = CONFIG_PATH.read_text()
+        """v-hands-off-data-2026-10-05: HANDS_OFF_DENYLIST is yaml data with NO
+        hard-coded symbols — the property reads trading.hands_off_denylist and
+        its default is empty."""
+        from pathlib import Path
+        src = Path("core/config.py").read_text()
         anchor = src.find("def HANDS_OFF_DENYLIST")
-        assert anchor != -1
-        block = src[anchor:anchor + 1200]
-        assert "MU" in block
-        assert "HQGE" in block
-        assert "SPCX" in block
-        assert "default = [" in block, (
-            "Default denylist should be defined"
-        )
-        assert "SNAP" not in block or "removed" in block.lower(), (
-            "SNAP is NOT in permanent denylist (can be toggled)"
-        )
+        assert anchor > 0
+        block = src[anchor:anchor + 1800]
+        assert "trading.hands_off_denylist" in block
+        assert "default: list = []" in block
+        for sym in ("MU", "HQGE", "SPCX", "SNAP"):
+            assert f"'{sym}'" not in block and f'"{sym}"' not in block, f"{sym} must not be hard-coded"
 
     def test_db_logger_get_todays_bot_entries(self):
         """DbLogger must have get_todays_bot_entries method for fallback."""
@@ -3838,7 +3836,7 @@ class TestCorrelationIgnoreUnmanagedBehavior:
         cfg = Config()
         hands_off_denylist = cfg.HANDS_OFF_DENYLIST
 
-        assert "MU" in hands_off_denylist
+        assert "MU" not in hands_off_denylist
         assert "HQGE" in hands_off_denylist
         assert "SPCX" in hands_off_denylist
 
@@ -3848,7 +3846,7 @@ class TestCorrelationIgnoreUnmanagedBehavior:
                 self.managed_by_bot = managed_by_bot
 
         positions = {
-            "MU": MockPosition("MU", True),    # Even with managed=True, denylist wins
+            "SPCX": MockPosition("SPCX", True),    # Even with managed=True, denylist wins
             "HQGE": MockPosition("HQGE", True),
             "AMD": MockPosition("AMD", True),  # Not in denylist
         }
@@ -3865,7 +3863,7 @@ class TestCorrelationIgnoreUnmanagedBehavior:
                 continue
             correlation_positions.add(sym)
 
-        assert "MU" not in correlation_positions, "MU (denylist) should be excluded"
+        assert "SPCX" not in correlation_positions, "SPCX (denylist) should be excluded"
         assert "HQGE" not in correlation_positions, "HQGE (denylist) should be excluded"
         assert "AMD" in correlation_positions, "AMD (not denylist, managed) should be included"
 

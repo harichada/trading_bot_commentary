@@ -229,7 +229,7 @@ class TestHandsOffExclusion:
         entries = [
             ShadowEntry(
                 timestamp=datetime.now(timezone.utc),
-                symbol="MU",
+                symbol="SPCX",
                 signal_type="LONG",
                 reason="test",
                 signal_close=100.0,

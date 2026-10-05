@@ -55,7 +55,17 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-HANDS_OFF_SYMBOLS = frozenset({"MU", "HQGE", "SPCX"})
+def _hands_off_from_config() -> frozenset:
+    """v-hands-off-data-2026-10-05: the hands-off list is yaml data
+    (trading.hands_off_denylist), never a literal. Empty when unavailable."""
+    try:
+        from core.config import Config
+        return frozenset(Config().HANDS_OFF_DENYLIST)
+    except Exception:
+        return frozenset()
+
+
+HANDS_OFF_SYMBOLS = _hands_off_from_config()
 DEDUPE_WINDOW_MIN = 15
 MAX_HOLD_BARS = 60
 FLATTEN_TIME_ET = time(15, 55)  # 15:55 ET — flatten before close

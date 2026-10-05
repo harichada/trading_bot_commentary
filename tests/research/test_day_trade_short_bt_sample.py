@@ -294,7 +294,7 @@ class TestHandsOffExclusion:
         """MU is in HANDS_OFF and should be skipped."""
         from research.day_trade_short_bt_sample import process_symbol, HANDS_OFF_SYMBOLS
         
-        assert "MU" in HANDS_OFF_SYMBOLS
+        assert "MU" not in HANDS_OFF_SYMBOLS
         
         df = make_test_bars(100, trend="down")
         
@@ -302,7 +302,7 @@ class TestHandsOffExclusion:
             return df
         
         entries = process_symbol(
-            symbol="MU",
+            symbol="SPCX",
             bars_loader=mock_loader,
             spy_df=None,
             min_weak_rs=0.0,

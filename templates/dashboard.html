@@ -3754,8 +3754,8 @@
             <div style="margin-top: 0.75rem; padding: 1rem; background: oklch(0.78 0.16 80 / 0.08);
                 border: 1px solid oklch(0.78 0.16 80 / 0.2); border-radius: var(--radius);
                 font-size: 0.85rem; color: oklch(0.85 0.10 80);">
-                <strong>🔒 Permanent symbols:</strong> MU, HQGE, SPCX are protected forever and
-                cannot be removed. SNAP and any other symbols you add can be freely edited.
+                <strong>Every symbol here is editable.</strong> Nothing is hard-coded: the list is saved to
+                Config.yaml and the bot re-reads it live. Remove a symbol only when its position is closed or you want the bot to manage it.
             </div>
         </div>
     </div>
@@ -3782,9 +3782,9 @@
         // v-hands-off-denylist-settings-2026-09-14: runtime Set of permanent
         // hands-off symbols. Populated from API on load; used by position
         // rendering to lock controls. Default fallback if API fails.
-        const DEFAULT_HANDS_OFF = ['MU', 'HQGE', 'SPCX'];
-        // HARD FLOOR: MU, HQGE, SPCX can NEVER be removed — protected forever
-        const PERMANENT_HANDS_OFF = new Set(['MU', 'HQGE', 'SPCX']);
+        const DEFAULT_HANDS_OFF = [];
+        // Permanent set comes from the API's `permanent` field (empty since 2026-10-05: no code floor)
+        let PERMANENT_HANDS_OFF = new Set();
         let handsOffSymbols = new Set(DEFAULT_HANDS_OFF);
         let handsOffOriginal = new Set(DEFAULT_HANDS_OFF);  // snapshot for change detection
         let handsOffPending = new Set(DEFAULT_HANDS_OFF);   // working copy for edits
@@ -3835,6 +3835,9 @@
                 const data = await resp.json();
                 if (data.status === 'success') {
                     const symbols = data.symbols || [];
+                    if (Array.isArray(data.permanent) && data.permanent.length) {
+                        PERMANENT_HANDS_OFF = new Set(data.permanent.map(x => String(x).toUpperCase()));
+                    }
                     handsOffSymbols = new Set(symbols);
                     handsOffOriginal = new Set(symbols);
                     handsOffPending = new Set(symbols);
@@ -3907,7 +3910,7 @@
         }
 
         function removeHandsOffSymbol(sym) {
-            // HARD FLOOR: MU, HQGE, SPCX can NEVER be removed
+            // HARD FLOOR: permanent symbols can NEVER be removed
             if (PERMANENT_HANDS_OFF.has(sym)) {
                 alert(`Cannot remove ${sym} — this is a permanent hands-off symbol that is protected forever.`);
                 return;

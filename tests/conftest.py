@@ -46,3 +46,17 @@ def _isolate_test_logging():
     if not logger.handlers:
         logger.addHandler(logging.NullHandler())
     yield removed
+
+
+@pytest.fixture(autouse=True)
+def _hands_off_list_is_data(monkeypatch):
+    """v-hands-off-data-2026-10-05: the hands-off list is yaml data with no
+    code floor, so tests pin it in memory (never on disk) to the two symbols
+    the live account protects. Tests that need a different list override
+    `core.config.config_manager.config['trading']['hands_off_denylist']`."""
+    try:
+        from core.config import config_manager
+        trading = config_manager.config.setdefault("trading", {})
+        monkeypatch.setitem(trading, "hands_off_denylist", ["HQGE", "SPCX"])
+    except Exception:
+        pass

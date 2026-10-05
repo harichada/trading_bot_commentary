@@ -289,6 +289,15 @@ CircuitBreaker = TradingLossBreaker
 # CONFIGURATION AND CONSTANTS
 # ============================================================================
 
+# v-hands-off-data-2026-10-05: the hands-off list is DATA, not code. It lives
+# in Config().yaml under trading.hands_off_denylist and is edited from the
+# dashboard Settings tab; there is no hard-coded floor any more (user
+# direction 2026-10-05: "handsoff list is not supposed to be hardcoded").
+# This constant stays as the empty floor so callers that need "the symbols
+# nobody may remove" have one name to import.
+PERMANENT_HANDS_OFF: frozenset = frozenset()
+
+
 class Config:
     """Central configuration for the trading bot"""
     # Use config manager instead of hardcoded values
@@ -1898,7 +1907,7 @@ class Config:
         count toward bot_daily_pnl or attempt to auto-close.
 
         Hari's STRICT hands-off portfolio as of 2026-09-14:
-          - MU, HQGE, SPCX
+          - none by default: the list is yaml data (trading.hands_off_denylist)
 
         SNAP removed from permanent hands-off on 2026-09-14 — operator
         can now toggle Long-Term / Bot-Managed / Close on SNAP from :9000 UI.
@@ -1911,7 +1920,7 @@ class Config:
 
         Override via config trading.hands_off_denylist (list of strings)
         to add/remove symbols at runtime."""
-        default = ['MU', 'HQGE', 'SPCX']
+        default: list = []   # no symbols are hands-off unless the yaml says so
         custom = self.manager.get('trading.hands_off_denylist', default)
         if isinstance(custom, str):
             custom = [s.strip().upper() for s in custom.split(',') if s.strip()]

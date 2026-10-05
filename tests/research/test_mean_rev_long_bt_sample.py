@@ -168,7 +168,7 @@ class TestHandsOffExclusion:
 
     def test_mu_excluded(self):
         from research.mean_rev_long_bt_sample import HANDS_OFF_SYMBOLS
-        assert "MU" in HANDS_OFF_SYMBOLS
+        assert "MU" not in HANDS_OFF_SYMBOLS
 
     def test_hqge_excluded(self):
         from research.mean_rev_long_bt_sample import HANDS_OFF_SYMBOLS

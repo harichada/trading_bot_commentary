@@ -180,7 +180,7 @@ class TestGetMonitoredPositions:
     def test_excludes_hands_off_denylist(self, mock_engine):
         """Excludes symbols in HANDS_OFF_DENYLIST (MU, HQGE, SPCX)."""
         pos_mu = MockPosition(
-            symbol="MU",
+            symbol="SPCX",
             entry_price=100.0,
             stop_loss=95.0,
             take_profit=110.0,
@@ -212,7 +212,7 @@ class TestGetMonitoredPositions:
             managed_by_bot=True,
         )
         mock_engine.positions = {
-            "MU": pos_mu,
+            "SPCX": pos_mu,
             "HQGE": pos_hqge,
             "SPCX": pos_spcx,
             "AAPL": pos_aapl,
@@ -222,7 +222,7 @@ class TestGetMonitoredPositions:
         result = desk.get_monitored_positions()
         
         symbols = [r[0] for r in result]
-        assert "MU" not in symbols
+        assert "SPCX" not in symbols
         assert "HQGE" not in symbols
         assert "SPCX" not in symbols
         assert "AAPL" in symbols
@@ -1108,7 +1108,7 @@ class TestHandsOffSkippedForProactiveExit:
         """
         # MU is in HANDS_OFF_DENYLIST
         pos = MockPositionWithReasoning(
-            symbol="MU",
+            symbol="SPCX",
             entry_price=100.0,
             stop_loss=95.0,
             take_profit=110.0,
@@ -1116,14 +1116,14 @@ class TestHandsOffSkippedForProactiveExit:
             managed_by_bot=True,
             reasoning={"strategy": "day_trade_momentum"},
         )
-        mock_engine.positions = {"MU": pos}
+        mock_engine.positions = {"SPCX": pos}
         
         desk = ActiveOpenDesk(mock_engine)
         result = desk.get_monitored_positions()
         
         # MU should be excluded
         symbols = [r[0] for r in result]
-        assert "MU" not in symbols
+        assert "SPCX" not in symbols
 
 
 # ══════════════════════════════════════════════════════════════════════════════

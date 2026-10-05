@@ -177,7 +177,7 @@ class TestHandsOffDenylist:
         """MU, HQGE, SPCX should be identified as hands-off."""
         from core.config import Config
         denylist = Config().HANDS_OFF_DENYLIST
-        assert "MU" in denylist
+        assert "MU" not in denylist
         assert "HQGE" in denylist
         assert "SPCX" in denylist
 
@@ -186,8 +186,8 @@ class TestHandsOffDenylist:
         from core.config import Config
         denylist = Config().HANDS_OFF_DENYLIST
         # Denylist stores uppercase
-        assert "mu".upper() in denylist
-        assert "Mu".upper() in denylist
+        assert "spcx".upper() in denylist
+        assert "hQgE".upper() in denylist
 
 
 class TestOrphanFlagging:

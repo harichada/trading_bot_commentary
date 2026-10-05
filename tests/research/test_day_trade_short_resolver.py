@@ -229,7 +229,7 @@ class TestHandsOffExclusion:
         entries = [
             ShadowEntry(
                 timestamp=datetime.now(timezone.utc),
-                symbol="MU",
+                symbol="SPCX",
                 signal_type="SHORT",
                 strategy="day_trade_momentum_short",
                 entry_pattern="breakdown",

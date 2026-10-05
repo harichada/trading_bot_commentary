@@ -835,7 +835,7 @@ _TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}$')
 # HARD FLOOR: these symbols can NEVER be removed from the denylist.
 # They are permanent long-term holds that must remain protected regardless
 # of any UI or API action. SNAP is NOT in this list — it's fully editable.
-PERMANENT_HANDS_OFF = frozenset({'MU', 'HQGE', 'SPCX'})
+from core.config import PERMANENT_HANDS_OFF  # noqa: E402  (empty: the list is yaml data)
 
 
 def _is_valid_ticker(symbol: str) -> bool:
@@ -864,7 +864,7 @@ async def get_hands_off_denylist():
             "source": "config" | "default_fallback"
         }
     """
-    DEFAULT_DENYLIST = ['MU', 'HQGE', 'SPCX']
+    DEFAULT_DENYLIST: list = []
     try:
         from core.config import Config
         cfg = Config()
@@ -893,7 +893,7 @@ async def update_hands_off_denylist(request: dict):
     via config_manager, and returns the saved list. Invalid symbols are
     silently dropped with a warning in the response.
 
-    HARD FLOOR: MU, HQGE, SPCX can NEVER be removed. If the request
+    Floor: PERMANENT_HANDS_OFF (empty since 2026-10-05) can never be removed. If the request
     attempts to remove any of these, the API returns an error and does
     NOT persist any changes. SNAP is fully editable.
 
@@ -943,7 +943,7 @@ async def update_hands_off_denylist(request: dict):
         seen.add(normalized)
         valid.append(normalized)
 
-    # HARD FLOOR: MU, HQGE, SPCX must ALWAYS be present
+    # Floor: PERMANENT_HANDS_OFF (empty since 2026-10-05) must remain present
     valid_set = set(valid)
     missing_permanent = PERMANENT_HANDS_OFF - valid_set
     if missing_permanent:

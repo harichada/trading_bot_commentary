@@ -318,7 +318,7 @@ class TestBuildBrokerOrphanEntry:
         from core.ledger_integrity import build_broker_orphan_entry
         
         entry = build_broker_orphan_entry(
-            symbol="MU",
+            symbol="SPCX",
             side="long",
             entry_price=100.0,
             exit_price=105.0,
