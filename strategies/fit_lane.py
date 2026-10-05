@@ -62,6 +62,8 @@ import pandas as pd
 from core.config import Config
 from core.models import MarketData, TradingSignal
 from core.strategy_fit_bars import load_context_slice
+from strategies.fit_lane_ledger import append_ledger
+from strategies.fit_lane_turn import _default_micro_provider, attach_micro, record_turn_verdict, verdict_from_attrs
 from strategies.base import TradingStrategyWithCommentary
 from strategies.families.common import Family, median_params
 from strategies.families.indicators import closed_bars, indicator_frame
@@ -128,6 +130,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         allowlist: Optional[Callable[[], Any]] = None,
         context_source: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
         regime_source: Optional[Callable[[str], str]] = None,
+        micro_provider: Optional[Callable[[str], Any]] = None,
     ) -> None:
         super().__init__(commentary)
         # v-strategy-fit-review-2026-09-25: resolved eagerly so a typo'd
@@ -150,6 +153,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         self._context_source = context_source or (
             lambda sym: load_context_slice(Config().STRATEGY_HUNT_DATA_ROOT, sym))
         self._regime_source = regime_source or (lambda sym: read_live_regime(sym))
+        self._micro_provider = micro_provider or _default_micro_provider
 
     def set_news_bus(self, bus) -> None:
         self._news_bus = bus
@@ -267,9 +271,17 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             logger.debug("fit_lane: context slice unavailable for %s: %s", symbol, ctx_exc)
 
         ind = indicator_frame(bars, daily, spy5, context=context)
+        if family == "rsi_turn":
+            try:
+                ind = attach_micro(ind, self._micro_provider(symbol))
+            except Exception as micro_exc:
+                logger.debug("fit_lane: micro snapshot unavailable for %s: %s", symbol, micro_exc)
         entries = self._fam.fn(bars, ind, daily, news, params)
 
         now_ts = bars.index[-1]
+        thesis = verdict_from_attrs(bars, now_ts)
+        if thesis is not None:
+            record_turn_verdict(symbol, now_ts, thesis)
         rows_by_side = {"long": row_long, "short": row_short}
         allow_sides = self._admissible_sides()
         kept = [e for e in entries if e.entry_ts == now_ts
@@ -278,7 +290,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             self._log_decision(market_data, "skip", "no_entry_now", skip_snapshot=True)
             return None
 
-        best_entry, best_row = self._append_ledger(now_ts, symbol, kept, rows_by_side, params)
+        best_entry, best_row = self._append_ledger(now_ts, symbol, kept, rows_by_side, params, thesis=thesis)
 
         if family not in self._live_families():
             self._log_decision(
@@ -338,38 +350,12 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         behaving exactly as they did before."""
         return admissible_sides(self._family_name, self._live_families, self._allowlist)
 
-    def _append_ledger(self, now_ts, symbol: str, kept: list, rows_by_side: dict, params: dict) -> Tuple[Entry, Any]:
-        """Picks the best-scoring kept entry and appends one ledger line per
-        kept entry. The ledger write is best-effort: a bad ledger_dir (e.g.
-        unwritable, or a file where a directory is expected) must not stop
-        a live/shadow decision from being made — it's just logged."""
+    def _append_ledger(self, now_ts, symbol: str, kept: list, rows_by_side: dict, params: dict,
+                       thesis: Optional[dict] = None) -> Tuple[Entry, Any]:
+        """Best kept entry + one ledger line per kept entry (see fit_lane_ledger)."""
         best_entry, best_row = self._best_of(kept, rows_by_side)
-
-        try:
-            self._ledger_dir.mkdir(parents=True, exist_ok=True)
-            with open(ledger_path(self._family_name, self._ledger_dir), "a") as fh:
-                for entry in kept:
-                    # v-go-live-5k-2026-09-28 (Task 2): an allowlisted side may have no row at
-                    # all, so the verdict/score fields are read defensively ("" / null) rather
-                    # than indexed — the ledger line is the evidence trail either way.
-                    row = rows_by_side.get(entry.side)
-                    fh.write(json.dumps({
-                        "ts": now_ts.isoformat(),
-                        "symbol": symbol,
-                        "side": entry.side,
-                        "entry_px": entry.entry_px,
-                        "stop_px": entry.stop_px,
-                        "target_px": entry.target_px,
-                        "time_stop": entry.time_stop,
-                        "hold_kind": entry.hold_kind,
-                        "tag": entry.tag,
-                        "params": params,
-                        "verdict": str(getattr(row, "verdict", "")),
-                        "score": getattr(row, "score", None),
-                    }) + "\n")
-        except Exception as exc:
-            logger.warning("fit_lane: ledger write failed for %s/%s: %s", self._family_name, symbol, exc)
-
+        append_ledger(ledger_path(self._family_name, self._ledger_dir), self._family_name, now_ts, symbol,
+                      kept, rows_by_side, params, thesis)
         return best_entry, best_row
 
     @staticmethod

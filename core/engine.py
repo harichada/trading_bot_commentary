@@ -9438,6 +9438,12 @@ class TradingEngineWithCommentary:
                         load_earnings_dates, Config().STRATEGY_HUNT_DATA_ROOT, position.symbol
                     )
                     hit, why = should_earnings_eve_flatten(position.symbol, _now_et, _earnings)
+                if not hit:
+                    # v-turn-engine-2026-10-05: rsi_turn thesis invalidation (spec §3.6)
+                    from core.swing_exits import should_thesis_fail
+                    from core.turn_verdicts import TurnVerdicts
+                    hit, why = should_thesis_fail(_reasoning, position.symbol, position.entry_time, _now_et,
+                                                  TurnVerdicts.instance().latest(position.symbol))
                 if hit:
                     self._audit("swing_exit", position.symbol, "exit", why,
                                 sessions_held=sessions_held(position.entry_time, _now_et))
