@@ -1501,6 +1501,26 @@ it never appears in `ps` or the log.
 > leaders: N of M scanned (top: ...)`. The relaxed mover-quality filter applies
 > to this source like the other Yahoo lists.
 
+> **2026-10-05 — Adaptive RSI Turn engine, Phase 1 (Level 1 + tape).** Spec:
+> `docs/superpowers/specs/2026-10-05-adaptive-rsi-turn-design.md`. The stream
+> now feeds `core/micro_book.py` (bid/ask sizes, last size, total volume →
+> 15/60-minute buy/sell volume, cumulative volume delta, VWAP, large prints,
+> EMA bid/ask imbalance and spread; quote-rule aggressor tagging; the desk's
+> 16:05 step flushes one parquet per symbol per ET date under `MICRO_DATA_DIR`
+> = `data/micro/`, tagged `quote_conflated`). The turn score
+> (`strategies/families/turn_score.py`: Z zone depth vs the symbol's own
+> trailing 5th-percentile RSI, M 15-minute momentum/divergence, A tape
+> absorption, B book pressure; convex weights, 0–100) drives the `rsi_turn`
+> family, registered as a SHADOW fit lane (`FIT_LANES_ENABLED`); its ledger
+> `data/shadow_fit_rsi_turn.ndjson` carries a `thesis` block per scored bar.
+> An `rsi_turn` position is closed early (`thesis_failed`) when, after at
+> least one 15-minute bar and within two sessions, the latest score is 20
+> below θ with negative 60-minute CVD. Research: tick-rule features from the
+> `trade_ticks` archive (`research/build_micro_archive.py` → `data/micro_archive/`,
+> timestamps read in fixed EST because the collector labelled EDT prints as
+> EST) and `research/rsi_turn_eval.py` (pooled simulation + sign-constrained
+> weight fit → `data/micro/turn_model.json`). Not live, no Level 2.
+
 ### 9.9 Risk Console
 
 The Risk Console (`core/settings_console.py`, `core/settings_console_store.py`,
