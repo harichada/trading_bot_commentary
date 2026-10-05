@@ -154,6 +154,10 @@ class TradingEngineWithCommentary:
         # disconnect we missed).
         self.price_book: PriceBook = PriceBook(stale_threshold_sec=600.0)
         PriceBook.install(self.price_book)
+        # v-micro-book-2026-10-05: Level 1 sizes + tape rings beside the price book.
+        from core.micro_book import MicroBook
+        self.micro_book: MicroBook = MicroBook()
+        MicroBook.install(self.micro_book)
         # v-strategy-fit-2026-09-25: per-symbol strategy fit snapshot (Phase 2 gate)
         self._strategy_fit = StrategyFit(Config().STRATEGY_FIT_PATH, Config().STRATEGY_FIT_MAX_AGE_DAYS)
         self._fit_signals_this_pass: dict[tuple[str, str], list[str]] = {}

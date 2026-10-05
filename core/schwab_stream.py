@@ -39,6 +39,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Set, TYPE_CHECKING
 
+
+def _f(value):
+    """Float or None; Schwab fields arrive as str/int/float/None."""
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 logger = logging.getLogger("TradingBot")
 
 if TYPE_CHECKING:
@@ -223,6 +232,12 @@ class SchwabQuoteStream:
                 net_change = record.get("NET_CHANGE")
                 if net_change is None:
                     net_change = record.get("18")
+                # v-micro-book-2026-10-05: sizes and volume are kept now
+                # (they were received and dropped before).
+                bid_size = record.get("BID_SIZE", record.get("4"))
+                ask_size = record.get("ASK_SIZE", record.get("5"))
+                total_volume = record.get("TOTAL_VOLUME", record.get("8"))
+                last_size = record.get("LAST_SIZE", record.get("9"))
 
                 # v-null-tick-noop-2026-05-01: per architectural
                 # directive — if Schwab sends a tick that has NO price
@@ -273,6 +288,18 @@ class SchwabQuoteStream:
                         )
                 except Exception as exc:
                     logger.debug("stream pricebook write failed for %s: %s", sym, exc)
+                try:
+                    from core.micro_book import MicroBook
+                    mb = MicroBook.instance()
+                    if mb is not None:
+                        mb.on_tick(
+                            sym, datetime.now(timezone.utc),
+                            last=_f(last), bid=_f(bid), ask=_f(ask),
+                            bid_size=_f(bid_size), ask_size=_f(ask_size),
+                            last_size=_f(last_size), total_volume=_f(total_volume),
+                        )
+                except Exception as exc:
+                    logger.debug("stream micro_book write failed for %s: %s", sym, exc)
         except Exception as exc:
             # One bad tick must not kill the stream.
             logger.debug("stream _on_message error: %s", exc)

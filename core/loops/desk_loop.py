@@ -155,6 +155,19 @@ class DeskLoop:
         except Exception as exc:
             logger.debug("desk_loop audit failed component=%s err=%s", component, exc)
 
+    async def _flush_micro(self, cfg: Any, date: str) -> None:
+        """v-micro-book-2026-10-05: persist the session's minute bins (the
+        forward training set for the turn engine). Best-effort."""
+        try:
+            from core.micro_book import MicroBook
+            book = MicroBook.instance()
+            if book is None:
+                return
+            paths = await asyncio.to_thread(book.flush_all, str(getattr(cfg, "MICRO_DATA_DIR", "data/micro")), date)
+            logger.info("micro_book: flushed %d symbols for %s", len(paths), date)
+        except Exception as exc:
+            logger.warning("desk_loop micro flush failed date=%s err=%s", date, exc)
+
     # ── 09:25 — promote pending settings-console changes ────────────
 
     async def _step_settings(self, cfg: Any, now: datetime, date: str) -> None:
@@ -394,6 +407,7 @@ class DeskLoop:
 
     async def _step_journal(self, cfg: Any, now: datetime, date: str) -> None:
         desk_dir = cfg.DESK_DATA_DIR
+        await self._flush_micro(cfg, date)
         db_logger = getattr(self.engine, "db_logger", None)
 
         plan = await asyncio.to_thread(load_plan, desk_dir, date)

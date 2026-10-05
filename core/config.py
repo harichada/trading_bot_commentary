@@ -4513,6 +4513,16 @@ class Config:
         return int(self.manager.get('trading.desk_scan_max_symbols', 60))
 
     @property
+    def MICRO_DATA_DIR(self) -> str:
+        """v-micro-book-2026-10-05: where the per-session minute bins of the
+        microstructure book are flushed (one parquet per symbol per day).
+        Default "data/micro". Env MICRO_DATA_DIR or yaml trading.micro_data_dir."""
+        env_val = os.getenv("MICRO_DATA_DIR")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.micro_data_dir', 'data/micro'))
+
+    @property
     def DESK_DATA_DIR(self) -> str:
         """v-playbook-desk-b2-2026-09-25: directory holding the desk's runtime
         artifacts — daily plans, the playbook, and the journal.
