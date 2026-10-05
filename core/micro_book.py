@@ -10,11 +10,22 @@ This module keeps the rest, in fixed-size rings, O(1) per update:
 * aggressor tagging by the QUOTE rule (live) — the tick rule exists only for
   the historical archive, which has no quotes,
 * a 61-slot minute-bin ring with running 15- and 60-minute totals
-  (cumulative volume delta, sell share, VWAP, large prints),
+  (cumulative volume delta, sell share, VWAP, large prints) that advance on
+  EVERY update, so a quiet tape decays to zero instead of looking fresh,
 * a 900-slot quote ring with EMA bid/ask-size imbalance and EMA spread,
-* array-copy snapshots for readers, and a per-session parquet flush.
+* array-copy snapshots (with their age) for readers, and an append-safe
+  per-session parquet flush.
 
-Nothing here touches pandas on the hot path. One `SymbolMicro` is ~50 KB.
+Honesty about the feed (review round 0, finding 4): Schwab Level 1 is
+conflated at ~1 update/s, so one "trade" here is the volume block printed
+between two updates, booked at the last price with one side. Block counts are
+named `n_updates`, the large-print floor is taken from `last_size` (a real
+print size), and the flushed file is tagged `quote_conflated`. A model fitted
+on the archive's tick-rule prints must not be scored on these columns as if
+they were the same distribution.
+
+Nothing here touches pandas on the hot path. One `SymbolMicro` is ~60 KB; the
+book caps itself at `MAX_SYMBOLS` with least-recently-updated eviction.
 """
 from __future__ import annotations
 
@@ -23,7 +34,7 @@ import math
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -35,11 +46,18 @@ QUOTE_RING_CAPACITY = 900      # ~15 min at the observed ~1 update/s per name
 IMB_HALF_LIFE_S = 60.0
 SPR_HALF_LIFE_S = 300.0
 LARGE_PRINT_PCTL = 95.0
-LARGE_PRINT_SAMPLE = 2048      # print sizes kept for the session percentile
+LARGE_PRINT_SAMPLE = 2048      # last_size values kept for the session percentile
+MAX_SYMBOLS = 128
+MAX_SESSION_ROWS = 600         # ~1.5 sessions of completed bins before the flush drains them
+BLOCK_CAP_MULT = 50.0          # a volume block larger than 50x the median block is suspect
+BLOCK_CAP_SESSION_FRAC = 0.05  # ...or larger than 5% of the session's volume so far
+WARN_EVERY = 500
 
-# bin field indices
-_BUY, _SELL, _NBUY, _NSELL, _VWAPN, _VOL, _HIGH, _LOW, _CLOSE, _LARGE, _NTR = range(11)
-_NFIELDS = 11
+# bin field indices — additive fields first (retired by subtraction), then the extrema
+_BUY, _SELL, _VOL, _VWAPN, _LARGE, _LARGE_BUY, _LARGE_SELL, _NUPD, _NBUY, _NSELL, _NTICK, _NQUOTE, _UNCLASS = range(13)
+_ADDITIVE = 13
+_HIGH, _LOW, _CLOSE = 13, 14, 15
+_NFIELDS = 16
 
 
 def aggressor_tick_rule(price: float, price_prev: Optional[float], side_prev: int) -> int:
@@ -69,13 +87,22 @@ def aggressor_quote_rule(last: float, bid_prev: Optional[float], ask_prev: Optio
     return aggressor_tick_rule(last, last_prev, side_prev)
 
 
+def _tagged_by_quote(last: float, bid_prev: Optional[float], ask_prev: Optional[float]) -> bool:
+    return bid_prev is not None and ask_prev is not None and bid_prev < ask_prev and (last >= ask_prev or last <= bid_prev)
+
+
 @dataclass(frozen=True)
 class MicroSnapshot:
-    """A copy of one symbol's rolling state at `ts`. Immutable by construction."""
+    """A copy of one symbol's rolling state at `ts`. Immutable by construction.
+    `age_s` is how long ago the last update arrived; `head_minute` is the
+    epoch minute of the live bin (the windows end there)."""
     symbol: str
     ts: Optional[datetime]
+    age_s: float
+    head_minute: int
     buy_vol_15: float
     sell_vol_15: float
+    unclassified_vol_15: float
     buy_vol_60: float
     sell_vol_60: float
     cvd_15: float
@@ -88,7 +115,9 @@ class MicroSnapshot:
     large_buy_15: float
     large_sell_15: float
     large_print_floor: float
-    n_trades_15: int
+    n_updates_15: int
+    n_quote_tagged_15: int
+    n_tick_tagged_15: int
     imb_ema: float
     spread_ema: float
     bid: Optional[float]
@@ -96,6 +125,7 @@ class MicroSnapshot:
     bid_size: float
     ask_size: float
     last: Optional[float]
+    dropped_updates: int
     minute_close: np.ndarray    # last 60 minute closes (oldest first, NaN where empty)
 
 
@@ -103,24 +133,22 @@ class SymbolMicro:
     """Per-symbol rings. Single writer (the stream task); readers call
     `snapshot()`, which copies under a short lock."""
 
-    __slots__ = ("symbol", "_lock", "_bins", "_bin_minute", "_head", "_tot15", "_tot60", "_large15",
+    __slots__ = ("symbol", "_lock", "_bins", "_bin_minute", "_head", "_tot15", "_tot60",
                  "_quotes", "_qhead", "_qcount", "_imb_ema", "_spr_ema", "_imb_alpha", "_spr_alpha",
-                 "_last_quote_ts", "_bid", "_ask", "_bid_size", "_ask_size", "_last", "_last_trade_px",
-                 "_side_prev", "_total_volume", "_last_size", "_sizes", "_nsizes", "_large_floor",
-                 "_floor_minute", "trades_seen", "_ts", "_session_rows")
+                 "_bid", "_ask", "_bid_size", "_ask_size", "_last", "_last_trade_px",
+                 "_side_prev", "_total_volume", "_last_size", "_resync", "_session_volume",
+                 "_blocks", "_nblocks", "_sizes", "_nsizes", "_large_floor", "_floor_minute",
+                 "trades_seen", "_ts", "_session_rows", "_flushed_through", "dropped", "_warned")
 
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol.upper()
         self._lock = threading.Lock()
         self._bins = np.zeros((BINS, _NFIELDS), dtype=np.float64)
-        self._bins[:, _HIGH] = np.nan
-        self._bins[:, _LOW] = np.nan
-        self._bins[:, _CLOSE] = np.nan
+        self._bins[:, _HIGH:] = np.nan
         self._bin_minute = np.full(BINS, -1, dtype=np.int64)   # absolute minute index owning each slot
         self._head = -1                                         # absolute minute index of the live bin
-        self._tot15 = np.zeros(_NFIELDS, dtype=np.float64)      # running 15-min totals (additive fields)
-        self._tot60 = np.zeros(_NFIELDS, dtype=np.float64)
-        self._large15 = np.zeros(2, dtype=np.float64)           # large buy / large sell volume, 15 min
+        self._tot15 = np.zeros(_ADDITIVE, dtype=np.float64)     # running 15-min totals (additive fields)
+        self._tot60 = np.zeros(_ADDITIVE, dtype=np.float64)
         self._quotes = np.zeros((QUOTE_RING_CAPACITY, 5), dtype=np.float64)   # ts, bid, ask, bid_size, ask_size
         self._qhead = 0
         self._qcount = 0
@@ -128,7 +156,6 @@ class SymbolMicro:
         self._spr_ema = 0.0
         self._imb_alpha = 1.0 - 0.5 ** (1.0 / IMB_HALF_LIFE_S)
         self._spr_alpha = 1.0 - 0.5 ** (1.0 / SPR_HALF_LIFE_S)
-        self._last_quote_ts: Optional[float] = None
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
         self._bid_size = 0.0
@@ -138,52 +165,80 @@ class SymbolMicro:
         self._side_prev = 0
         self._total_volume: Optional[float] = None
         self._last_size: Optional[float] = None
-        self._sizes = np.zeros(LARGE_PRINT_SAMPLE, dtype=np.float64)
+        self._resync = False                                    # drop the next delta after a volume reset
+        self._session_volume = 0.0
+        self._blocks = np.zeros(LARGE_PRINT_SAMPLE, dtype=np.float64)   # recent block sizes (cap statistic)
+        self._nblocks = 0
+        self._sizes = np.zeros(LARGE_PRINT_SAMPLE, dtype=np.float64)    # recent last_size prints (large floor)
         self._nsizes = 0
         self._large_floor = math.inf
         self._floor_minute = -1
         self.trades_seen = 0
         self._ts: Optional[datetime] = None
         self._session_rows: List[np.ndarray] = []            # completed bins kept for the flush
+        self._flushed_through = -1                           # last minute already written by flush()
+        self.dropped = 0
+        self._warned = 0
 
     # ── hot path ────────────────────────────────────────────────────
 
     def on_tick(self, ts: datetime, *, last: Optional[float], bid: Optional[float], ask: Optional[float],
                 bid_size: Optional[float], ask_size: Optional[float], last_size: Optional[float],
                 total_volume: Optional[float]) -> None:
-        """One Level 1 update. O(1). Never raises (a bad field is dropped)."""
+        """One Level 1 update. O(1). Never raises (a bad update is counted in
+        `dropped` and surfaced in the snapshot; the first few are logged)."""
         try:
             with self._lock:
                 self._ts = ts
+                minute = int(ts.timestamp() // 60)
+                self._roll_to(minute)                       # every update advances the windows
                 bid_prev, ask_prev = self._bid, self._ask
                 size = self._trade_size(last_size, total_volume)
                 if bid is not None and ask is not None:
                     self._apply_quote(ts, float(bid), float(ask), bid_size, ask_size)
                     if bid_prev is None or ask_prev is None:
-                        # First update for the symbol: the quote that arrived with
-                        # the print is the only quote there is.
-                        bid_prev, ask_prev = self._bid, self._ask
+                        bid_prev, ask_prev = self._bid, self._ask    # first update: the only quote there is
                 if last is not None:
                     self._last = float(last)
                 if size > 0 and last is not None:
-                    self._apply_trade(ts, float(last), size, bid_prev, ask_prev)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("micro_book: tick dropped for %s: %s", self.symbol, exc)
+                    self._apply_trade(minute, float(last), size, bid_prev, ask_prev)
+        except Exception as exc:
+            self.dropped += 1
+            if self.dropped <= 3 or self.dropped % WARN_EVERY == 0:
+                logger.warning("micro_book: update dropped for %s (%d so far): %s", self.symbol, self.dropped, exc)
 
     def _trade_size(self, last_size: Optional[float], total_volume: Optional[float]) -> float:
+        """Volume printed since the previous update. A decreasing total
+        (session reset, out-of-order update) rebases and marks the next delta
+        for dropping; an implausibly large block is counted into volume only."""
         size = 0.0
         if total_volume is not None:
             tv = float(total_volume)
-            if self._total_volume is not None and tv > self._total_volume:
-                size = tv - self._total_volume
-            elif self._total_volume is None and last_size is not None:
-                size = float(last_size)
+            if self._total_volume is None:
+                size = float(last_size) if last_size is not None else 0.0
+            elif tv > self._total_volume:
+                size = 0.0 if self._resync else tv - self._total_volume
+                self._resync = False
+            elif tv < self._total_volume:
+                self._resync = True
+                size = 0.0
             self._total_volume = tv
         elif last_size is not None and float(last_size) != (self._last_size or 0.0):
             size = float(last_size)
         if last_size is not None:
             self._last_size = float(last_size)
+            if float(last_size) > 0:
+                self._sizes[self._nsizes % LARGE_PRINT_SAMPLE] = float(last_size)
+                self._nsizes += 1
         return size
+
+    def _block_is_suspect(self, size: float) -> bool:
+        n = min(self._nblocks, LARGE_PRINT_SAMPLE)
+        if n >= 30:
+            median = float(np.median(self._blocks[:n]))
+            if median > 0 and size > BLOCK_CAP_MULT * median and size > BLOCK_CAP_SESSION_FRAC * max(self._session_volume, 1.0):
+                return True
+        return False
 
     def _apply_quote(self, ts: datetime, bid: float, ask: float, bid_size, ask_size) -> None:
         bs = float(bid_size) if bid_size is not None else self._bid_size
@@ -203,31 +258,46 @@ class SymbolMicro:
         self._qhead = (self._qhead + 1) % QUOTE_RING_CAPACITY
         self._qcount = min(self._qcount + 1, QUOTE_RING_CAPACITY)
 
-    def _apply_trade(self, ts: datetime, px: float, size: float, bid_prev, ask_prev) -> None:
-        side = aggressor_quote_rule(px, bid_prev, ask_prev, self._last_trade_px, self._side_prev)
-        self._last_trade_px, self._side_prev = px, side
+    def _apply_trade(self, minute: int, px: float, size: float, bid_prev, ask_prev) -> None:
+        suspect = self._block_is_suspect(size)
+        self._blocks[self._nblocks % LARGE_PRINT_SAMPLE] = size
+        self._nblocks += 1
+        self._session_volume += size
         self.trades_seen += 1
-        minute = int(ts.timestamp() // 60)
-        self._roll_to(minute)
         b = self._bins[minute % BINS]
-        inc = np.zeros(_NFIELDS, dtype=np.float64)
-        if side > 0:
-            inc[_BUY] = size
-            inc[_NBUY] = 1
-        elif side < 0:
-            inc[_SELL] = size
-            inc[_NSELL] = 1
-        inc[_VWAPN] = px * size
+        inc = np.zeros(_ADDITIVE, dtype=np.float64)
         inc[_VOL] = size
-        inc[_NTR] = 1
-        self._note_size(size, minute)
-        if size >= self._large_floor:
-            inc[_LARGE] = size
+        inc[_VWAPN] = px * size
+        inc[_NUPD] = 1
+        if suspect:
+            inc[_UNCLASS] = size
+            if self._warned < 5:
+                self._warned += 1
+                logger.warning("micro_book: %s volume block %.0f exceeds the cap; counted as unclassified", self.symbol, size)
+        else:
+            side = aggressor_quote_rule(px, bid_prev, ask_prev, self._last_trade_px, self._side_prev)
+            self._last_trade_px, self._side_prev = px, side
+            if _tagged_by_quote(px, bid_prev, ask_prev):
+                inc[_NQUOTE] = 1
+            elif side != 0:
+                inc[_NTICK] = 1
             if side > 0:
-                self._large15[0] += size
+                inc[_BUY] = size
+                inc[_NBUY] = 1
             elif side < 0:
-                self._large15[1] += size
-        b += inc
+                inc[_SELL] = size
+                inc[_NSELL] = 1
+            else:
+                inc[_UNCLASS] = size
+            self._refresh_large_floor(minute)
+            last_print = self._last_size or 0.0
+            if last_print >= self._large_floor:
+                inc[_LARGE] = size
+                if side > 0:
+                    inc[_LARGE_BUY] = size
+                elif side < 0:
+                    inc[_LARGE_SELL] = size
+        b[:_ADDITIVE] += inc
         b[_HIGH] = px if np.isnan(b[_HIGH]) else max(b[_HIGH], px)
         b[_LOW] = px if np.isnan(b[_LOW]) else min(b[_LOW], px)
         b[_CLOSE] = px
@@ -240,16 +310,20 @@ class SymbolMicro:
         gap of g minutes retires at most g bins, each exactly once per window."""
         if self._head == minute:
             return
-        if self._head < 0:
+        if self._head < 0 or minute < self._head:
+            if minute < self._head:                      # clock went backwards: start over
+                self._bin_minute[:] = -1
+            self._tot15[:] = 0
+            self._tot60[:] = 0
             self._head = minute
             self._claim(minute)
             return
         gap = minute - self._head
         if gap > BINS:
-            # Longer than the ring: every bin has left both windows.
             self._tot15[:] = 0
             self._tot60[:] = 0
-            self._large15[:] = 0
+            for slot in range(BINS):
+                self._stash(slot)
             self._bin_minute[:] = -1
             self._head = minute
             self._claim(minute)
@@ -264,35 +338,33 @@ class SymbolMicro:
         slot = minute % BINS
         if minute < 0 or self._bin_minute[slot] != minute:
             return
-        b = self._bins[slot]
+        b = self._bins[slot, :_ADDITIVE]
         if window == 15:
             self._tot15 -= b
-            self._large15[:] = np.maximum(self._large15 - self._split_large(b), 0.0)
         else:
             self._tot60 -= b
 
-    @staticmethod
-    def _split_large(b: np.ndarray) -> np.ndarray:
-        # large volume is tracked per side only as a 15-min pair; approximate the
-        # retiring bin's split by its buy/sell share (exact when one side dominates).
-        tot = b[_BUY] + b[_SELL]
-        if tot <= 0:
-            return np.zeros(2)
-        return np.array([b[_LARGE] * b[_BUY] / tot, b[_LARGE] * b[_SELL] / tot])
+    def _stash(self, slot: int) -> None:
+        """Keep a completed bin for the flush (bounded)."""
+        m = self._bin_minute[slot]
+        if m < 0 or self._bins[slot, _NUPD] <= 0 or m <= self._flushed_through:
+            return
+        if len(self._session_rows) >= MAX_SESSION_ROWS:
+            if self._warned < 6:
+                self._warned += 1
+                logger.warning("micro_book: %s session rows exceed %d without a flush; oldest dropped", self.symbol, MAX_SESSION_ROWS)
+            del self._session_rows[0]
+        self._session_rows.append(np.concatenate(([m], self._bins[slot].copy())))
 
     def _claim(self, minute: int) -> None:
         slot = minute % BINS
         if self._bin_minute[slot] >= 0 and self._bin_minute[slot] != minute:
-            self._session_rows.append(np.concatenate(([self._bin_minute[slot]], self._bins[slot].copy())))
-        self._bins[slot] = 0.0
-        self._bins[slot, _HIGH] = np.nan
-        self._bins[slot, _LOW] = np.nan
-        self._bins[slot, _CLOSE] = np.nan
+            self._stash(slot)
+        self._bins[slot, :_ADDITIVE] = 0.0
+        self._bins[slot, _HIGH:] = np.nan
         self._bin_minute[slot] = minute
 
-    def _note_size(self, size: float, minute: int) -> None:
-        self._sizes[self._nsizes % LARGE_PRINT_SAMPLE] = size
-        self._nsizes += 1
+    def _refresh_large_floor(self, minute: int) -> None:
         if minute != self._floor_minute and self._nsizes >= 20:
             n = min(self._nsizes, LARGE_PRINT_SAMPLE)
             self._large_floor = float(np.percentile(self._sizes[:n], LARGE_PRINT_PCTL))
@@ -304,11 +376,10 @@ class SymbolMicro:
     def quote_count(self) -> int:
         return self._qcount
 
-    def snapshot(self) -> MicroSnapshot:
+    def snapshot(self, now: Optional[datetime] = None) -> MicroSnapshot:
         with self._lock:
             t15 = self._tot15.copy()
             t60 = self._tot60.copy()
-            large = self._large15.copy()
             closes = np.full(60, np.nan)
             if self._head >= 0:
                 for k in range(60):
@@ -318,68 +389,88 @@ class SymbolMicro:
                         closes[k] = self._bins[slot, _CLOSE]
             bid, ask, last = self._bid, self._ask, self._last
             bs, asz = self._bid_size, self._ask_size
-            imb, spr, floor, ts = self._imb_ema, self._spr_ema, self._large_floor, self._ts
+            imb, spr, floor, ts, head = self._imb_ema, self._spr_ema, self._large_floor, self._ts, self._head
+            dropped = self.dropped
+        now = now or datetime.now(timezone.utc)
+        age = (now - ts).total_seconds() if ts is not None and ts.tzinfo is not None and now.tzinfo is not None else math.inf
         vol15 = t15[_VOL]
         sides = t15[_BUY] + t15[_SELL]
         return MicroSnapshot(
-            symbol=self.symbol, ts=ts,
-            buy_vol_15=float(t15[_BUY]), sell_vol_15=float(t15[_SELL]),
+            symbol=self.symbol, ts=ts, age_s=float(age), head_minute=int(head),
+            buy_vol_15=float(t15[_BUY]), sell_vol_15=float(t15[_SELL]), unclassified_vol_15=float(t15[_UNCLASS]),
             buy_vol_60=float(t60[_BUY]), sell_vol_60=float(t60[_SELL]),
             cvd_15=float(t15[_BUY] - t15[_SELL]), cvd_60=float(t60[_BUY] - t60[_SELL]),
             vol_15=float(vol15), vol_60=float(t60[_VOL]),
             sell_share_15=float(t15[_SELL] / sides) if sides > 0 else 0.5,
             vwap_15=float(t15[_VWAPN] / vol15) if vol15 > 0 else 0.0,
-            large_vol_15=float(t15[_LARGE]), large_buy_15=float(large[0]), large_sell_15=float(large[1]),
+            large_vol_15=float(t15[_LARGE]), large_buy_15=float(t15[_LARGE_BUY]), large_sell_15=float(t15[_LARGE_SELL]),
             large_print_floor=float(floor) if math.isfinite(floor) else 0.0,
-            n_trades_15=int(t15[_NTR]),
+            n_updates_15=int(t15[_NUPD]), n_quote_tagged_15=int(t15[_NQUOTE]), n_tick_tagged_15=int(t15[_NTICK]),
             imb_ema=float(imb), spread_ema=float(spr), bid=bid, ask=ask, bid_size=float(bs), ask_size=float(asz),
-            last=last, minute_close=closes,
+            last=last, dropped_updates=int(dropped), minute_close=closes,
         )
 
     # ── persistence ─────────────────────────────────────────────────
 
     def flush(self, root: str, session_date: str) -> str:
-        """Write every completed minute bin of the session (plus the live one)
-        to `<root>/<SYMBOL>/<session_date>.parquet`, one row per minute, and
-        reset the session row buffer. Returns the path."""
+        """Append every minute bin not yet written to
+        `<root>/<SYMBOL>/<session_date>.parquet` (one row per minute, UTC
+        `t_open`), merging with rows already on disk, via a temp file and
+        rename. A second flush of the same day can only add rows."""
         import pandas as pd
         with self._lock:
             rows = list(self._session_rows)
             for slot in range(BINS):
                 m = self._bin_minute[slot]
-                if m >= 0:
+                if m > self._flushed_through and self._bins[slot, _NUPD] > 0:
                     rows.append(np.concatenate(([m], self._bins[slot].copy())))
             self._session_rows = []
-        rows.sort(key=lambda r: r[0])
-        seen = set()
-        recs = []
+            written_through = max([int(r[0]) for r in rows], default=self._flushed_through)
+        recs = {}
         for r in rows:
             m = int(r[0])
-            if m in seen or r[1 + _NTR] <= 0:
+            if m <= self._flushed_through or m in recs:
                 continue
-            seen.add(m)
-            vol = r[1 + _VOL]
-            recs.append({"t_open": datetime.fromtimestamp(m * 60, tz=self._ts.tzinfo if self._ts else None),
-                         "buy_vol": r[1 + _BUY], "sell_vol": r[1 + _SELL], "vol": vol,
-                         "n_buy": int(r[1 + _NBUY]), "n_sell": int(r[1 + _NSELL]), "n_trades": int(r[1 + _NTR]),
-                         "vwap": r[1 + _VWAPN] / vol if vol > 0 else float("nan"),
-                         "high": r[1 + _HIGH], "low": r[1 + _LOW], "close": r[1 + _CLOSE], "large_vol": r[1 + _LARGE],
-                         "aggressor_rule": "quote"})
+            f = r[1:]
+            vol = f[_VOL]
+            recs[m] = {"t_open": datetime.fromtimestamp(m * 60, tz=timezone.utc),
+                       "buy_vol": f[_BUY], "sell_vol": f[_SELL], "unclassified_vol": f[_UNCLASS], "vol": vol,
+                       "n_buy": int(f[_NBUY]), "n_sell": int(f[_NSELL]), "n_updates": int(f[_NUPD]),
+                       "n_trades": int(f[_NUPD]),
+                       "n_quote_tagged": int(f[_NQUOTE]), "n_tick_tagged": int(f[_NTICK]),
+                       "vwap": f[_VWAPN] / vol if vol > 0 else float("nan"),
+                       "high": f[_HIGH], "low": f[_LOW], "close": f[_CLOSE],
+                       "large_vol": f[_LARGE], "large_buy": f[_LARGE_BUY], "large_sell": f[_LARGE_SELL],
+                       "aggressor_rule": "quote_conflated"}
         out_dir = os.path.join(root, self.symbol)
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, f"{session_date}.parquet")
-        pd.DataFrame(recs).to_parquet(path, index=False)
+        new = pd.DataFrame(list(recs.values()))
+        if os.path.exists(path):
+            try:
+                old = pd.read_parquet(path)
+                new = pd.concat([old, new], ignore_index=True) if not new.empty else old
+                new = new.drop_duplicates(subset="t_open", keep="last").sort_values("t_open")
+            except Exception as exc:
+                logger.warning("micro_book: could not merge existing %s: %s", path, exc)
+        tmp = path + ".tmp"
+        new.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+        with self._lock:
+            self._flushed_through = max(self._flushed_through, written_through)
         return path
 
 
 class MicroBook:
-    """Process-wide registry of `SymbolMicro`, installed next to `PriceBook`."""
+    """Process-wide registry of `SymbolMicro`, installed next to `PriceBook`.
+    Bounded at MAX_SYMBOLS: the least recently updated symbol is evicted."""
 
     _singleton: Optional["MicroBook"] = None
 
-    def __init__(self) -> None:
+    def __init__(self, max_symbols: int = MAX_SYMBOLS) -> None:
         self._symbols: Dict[str, SymbolMicro] = {}
         self._lock = threading.Lock()
+        self._max = max(1, int(max_symbols))
 
     @classmethod
     def install(cls, book: "MicroBook") -> None:
@@ -396,8 +487,18 @@ class MicroBook:
             with self._lock:
                 sm = self._symbols.get(sym)
                 if sm is None:
+                    if len(self._symbols) >= self._max:
+                        self._evict_oldest()
                     sm = self._symbols[sym] = SymbolMicro(sym)
         return sm
+
+    def _evict_oldest(self) -> None:
+        def stamp(item):
+            t = item[1]._ts
+            return t.timestamp() if t is not None else -1.0
+        victim = min(self._symbols.items(), key=stamp)[0]
+        logger.info("micro_book: evicting %s (cap %d symbols)", victim, self._max)
+        del self._symbols[victim]
 
     def on_tick(self, symbol: str, ts: datetime, **fields) -> None:
         if not symbol:
@@ -405,9 +506,9 @@ class MicroBook:
         self._get(symbol).on_tick(ts, **fields)
         return None
 
-    def snapshot(self, symbol: str) -> Optional[MicroSnapshot]:
+    def snapshot(self, symbol: str, now: Optional[datetime] = None) -> Optional[MicroSnapshot]:
         sm = self._symbols.get((symbol or "").upper())
-        return sm.snapshot() if sm is not None else None
+        return sm.snapshot(now) if sm is not None else None
 
     def symbols(self) -> List[str]:
         return list(self._symbols)

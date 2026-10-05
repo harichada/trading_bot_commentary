@@ -37,7 +37,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+
+from core.micro_book import MicroBook
 from typing import Optional, Set, TYPE_CHECKING
+
+
+def _field(record, name, number):
+    """A Schwab field by name or numeric id; None when absent OR null."""
+    value = record.get(name)
+    return value if value is not None else record.get(number)
 
 
 def _f(value):
@@ -234,10 +242,13 @@ class SchwabQuoteStream:
                     net_change = record.get("18")
                 # v-micro-book-2026-10-05: sizes and volume are kept now
                 # (they were received and dropped before).
-                bid_size = record.get("BID_SIZE", record.get("4"))
-                ask_size = record.get("ASK_SIZE", record.get("5"))
-                total_volume = record.get("TOTAL_VOLUME", record.get("8"))
-                last_size = record.get("LAST_SIZE", record.get("9"))
+                bid_size = _field(record, "BID_SIZE", "4")
+                ask_size = _field(record, "ASK_SIZE", "5")
+                total_volume = _field(record, "TOTAL_VOLUME", "8")
+                last_size = _field(record, "LAST_SIZE", "9")
+                # the micro book only ever sees a real print price, never the
+                # mark/close fallback the price book accepts (review finding 6)
+                print_px = _field(record, "LAST_PRICE", "3")
 
                 # v-null-tick-noop-2026-05-01: per architectural
                 # directive — if Schwab sends a tick that has NO price
@@ -289,12 +300,11 @@ class SchwabQuoteStream:
                 except Exception as exc:
                     logger.debug("stream pricebook write failed for %s: %s", sym, exc)
                 try:
-                    from core.micro_book import MicroBook
                     mb = MicroBook.instance()
                     if mb is not None:
                         mb.on_tick(
                             sym, datetime.now(timezone.utc),
-                            last=_f(last), bid=_f(bid), ask=_f(ask),
+                            last=_f(print_px), bid=_f(bid), ask=_f(ask),
                             bid_size=_f(bid_size), ask_size=_f(ask_size),
                             last_size=_f(last_size), total_volume=_f(total_volume),
                         )

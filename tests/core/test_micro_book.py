@@ -112,7 +112,8 @@ def test_large_print_floor_tracks_the_session_and_flags_big_prints():
     _stream(sm, minutes=20)
     snap = sm.snapshot()
     assert snap.large_print_floor >= 200           # 95th percentile of {1,50,100,200,800}
-    assert snap.large_vol_15 > 0 and snap.large_vol_15 <= snap.buy_vol_15 + snap.sell_vol_15
+    assert snap.large_vol_15 > 0 and snap.large_vol_15 <= snap.vol_15
+    assert snap.large_buy_15 + snap.large_sell_15 <= snap.large_vol_15 + 1e-9
 
 
 # ── quote ring + EMAs ─────────────────────────────────────────────────
@@ -178,8 +179,9 @@ def test_stream_handler_feeds_the_micro_book(monkeypatch):
     import inspect
     import core.schwab_stream as ss
     src = inspect.getsource(ss)
-    assert 'record.get("BID_SIZE", record.get("4"))' in src
-    assert 'record.get("TOTAL_VOLUME", record.get("8"))' in src
+    assert '_field(record, "BID_SIZE", "4")' in src and '_field(record, "TOTAL_VOLUME", "8")' in src
+    assert 'last=_f(print_px)' in src and '_field(record, "LAST_PRICE", "3")' in src
+    assert ss._field({"BID_SIZE": None, "4": 7}, "BID_SIZE", "4") == 7
     assert "mb.on_tick(" in src and "MicroBook.instance()" in src
     assert ss._f("12.5") == 12.5 and ss._f(None) is None and ss._f("x") is None
 
@@ -197,3 +199,98 @@ def test_desk_loop_flushes_the_book_at_the_journal_step(tmp_path, monkeypatch):
     assert (tmp_path / "MU" / "2026-10-05.parquet").exists()
     # a second flush of the same day is harmless (rows already persisted are not duplicated)
     _a.run(loop._flush_micro(SimpleNamespace(MICRO_DATA_DIR=str(tmp_path)), "2026-10-05"))
+
+
+# ── review round 0 findings ──────────────────────────────────────────
+
+def test_windows_decay_during_quote_only_updates():
+    sm = SymbolMicro("MU")
+    sm.on_tick(_ts(0), last=100.05, bid=100.0, ask=100.05, bid_size=500, ask_size=300, last_size=500, total_volume=500)
+    assert sm.snapshot(_ts(1)).vol_15 == 500
+    for i in range(1, 16 * 60):
+        sm.on_tick(_ts(i), last=None, bid=100.0, ask=100.05, bid_size=500, ask_size=300, last_size=None, total_volume=None)
+    snap = sm.snapshot(_ts(16 * 60))
+    assert snap.vol_15 == 0 and snap.cvd_15 == 0 and snap.vol_60 == 500 and snap.age_s == pytest.approx(1.0)
+    for i in range(16 * 60, 61 * 60):
+        sm.on_tick(_ts(i), last=None, bid=100.0, ask=100.05, bid_size=500, ask_size=300, last_size=None, total_volume=None)
+    assert sm.snapshot().vol_60 == 0
+
+
+def test_volume_reset_does_not_book_a_phantom_print():
+    sm = SymbolMicro("MU")
+    q = dict(bid=100.0, ask=100.05, bid_size=500, ask_size=300)
+    sm.on_tick(_ts(0), last=100.05, last_size=100, total_volume=1_000_000, **q)
+    sm.on_tick(_ts(1), last=100.05, last_size=200, total_volume=1_000_200, **q)
+    sm.on_tick(_ts(2), last=100.05, last_size=100, total_volume=500, **q)             # reset / out of order
+    sm.on_tick(_ts(3), last=100.05, last_size=400, total_volume=1_000_400, **q)       # first delta after reset: dropped
+    sm.on_tick(_ts(4), last=100.05, last_size=100, total_volume=1_000_500, **q)
+    assert sm.snapshot().vol_15 == 100 + 200 + 100
+
+
+def test_implausible_block_is_unclassified_not_a_side():
+    sm = SymbolMicro("MU")
+    q = dict(bid=100.0, ask=100.05, bid_size=500, ask_size=300)
+    vol = 0
+    for i in range(60):
+        vol += 100
+        sm.on_tick(_ts(i), last=100.05, last_size=100, total_volume=vol, **q)
+    vol += 5_000_000
+    sm.on_tick(_ts(61), last=100.05, last_size=100, total_volume=vol, **q)
+    snap = sm.snapshot()
+    assert snap.unclassified_vol_15 == 5_000_000 and snap.buy_vol_15 == 6000
+    assert snap.buy_vol_15 + snap.sell_vol_15 + snap.unclassified_vol_15 == snap.vol_15
+
+
+def test_first_print_uses_quote_in_the_same_update_and_side_zero_is_accounted():
+    sm = SymbolMicro("MU")
+    sm.on_tick(_ts(0), last=100.02, bid=None, ask=None, bid_size=None, ask_size=None, last_size=50, total_volume=50)
+    snap = sm.snapshot()
+    assert snap.vol_15 == 50 and snap.unclassified_vol_15 == 50 and snap.n_quote_tagged_15 == 0
+    sm.on_tick(_ts(1), last=100.05, bid=100.0, ask=100.05, bid_size=10, ask_size=10, last_size=50, total_volume=100)
+    snap = sm.snapshot()
+    assert snap.buy_vol_15 == 50 and snap.n_quote_tagged_15 == 1
+
+
+def test_flush_twice_only_adds_rows_and_never_reemits_old_bins(tmp_path):
+    import pandas as pd
+    sm = SymbolMicro("MU")
+    log = _stream(sm, minutes=7)
+    p1 = sm.flush(str(tmp_path), "2026-10-05")
+    n1 = len(pd.read_parquet(p1))
+    # a restart-like second flush with two more minutes of ticks
+    t_last = log[-1][0]
+    vol = sm._total_volume
+    for k in range(240):
+        vol += 10
+        sm.on_tick(t_last + timedelta(seconds=1 + k * 0.5), last=100.0, bid=99.95, ask=100.0, bid_size=5, ask_size=5, last_size=10, total_volume=vol)
+    p2 = sm.flush(str(tmp_path), "2026-10-05")
+    df = pd.read_parquet(p2)
+    assert p1 == p2 and len(df) >= n1 and df["t_open"].is_unique
+    assert str(df["t_open"].dt.tz) == "UTC" and (df["aggressor_rule"] == "quote_conflated").all()
+    # next day's file must not contain yesterday's bins
+    p3 = sm.flush(str(tmp_path), "2026-10-06")
+    assert len(pd.read_parquet(p3)) == 0
+
+
+def test_book_caps_symbols_with_eviction():
+    book = MicroBook(max_symbols=3)
+    for i, s in enumerate(["A", "B", "C"]):
+        book.on_tick(s, _ts(i), last=None, bid=1.0, ask=1.01, bid_size=1, ask_size=1, last_size=None, total_volume=None)
+    book.on_tick("D", _ts(10), last=None, bid=1.0, ask=1.01, bid_size=1, ask_size=1, last_size=None, total_volume=None)
+    assert sorted(book.symbols()) == ["B", "C", "D"]
+
+
+def test_concurrent_writer_and_reader_stay_consistent():
+    import threading
+    sm = SymbolMicro("MU")
+    stop = threading.Event()
+    bad = []
+    def reader():
+        while not stop.is_set():
+            s = sm.snapshot()
+            if not (s.buy_vol_15 + s.sell_vol_15 + s.unclassified_vol_15 <= s.vol_15 + 1e-6):
+                bad.append(s)
+    t = threading.Thread(target=reader); t.start()
+    _stream(sm, minutes=30)
+    stop.set(); t.join()
+    assert not bad
