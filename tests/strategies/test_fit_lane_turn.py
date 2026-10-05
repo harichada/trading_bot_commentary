@@ -81,3 +81,26 @@ def test_engine_and_fit_lane_wiring_present():
     lane_src = inspect.getsource(fl.FitLaneStrategy._generate)
     assert 'if family == "rsi_turn":' in lane_src and "attach_micro(ind, self._micro_provider(symbol))" in lane_src
     assert "record_turn_verdict(symbol, now_ts, thesis)" in lane_src
+
+
+def test_thesis_fail_needs_a_verdict_after_the_fill_and_a_minimum_hold():
+    from core.swing_exits import should_thesis_fail
+    reasoning = {"fit_family": "rsi_turn", "fit_params": {"theta": 60}, "hold_kind": "multiday"}
+    entry = datetime(2026, 10, 6, 10, 0)
+    before_fill = TurnVerdict("MU", datetime(2026, 10, 6, 9, 55), 20.0, 60.0, -1.0, ())
+    assert should_thesis_fail(reasoning, "MU", entry, datetime(2026, 10, 6, 10, 5), before_fill) == (False, "")
+    fresh = TurnVerdict("MU", datetime(2026, 10, 6, 10, 10), 20.0, 60.0, -1.0, ())
+    assert should_thesis_fail(reasoning, "MU", entry, datetime(2026, 10, 6, 10, 12), fresh) == (False, "")   # < 15 min held
+    assert should_thesis_fail(reasoning, "MU", entry, datetime(2026, 10, 6, 10, 20), fresh)[0] is True
+
+
+def test_family_keeps_only_the_current_bars_verdict():
+    import pandas as pd
+    from strategies.families.rsi_turn import rsi_turn_entries
+    from tests.strategies.families.test_rsi_turn import _bars5, _daily, _ind
+    daily = _daily()
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range(daily.index[-1] + pd.Timedelta(days=1), periods=2)]
+    bars = _bars5(days)
+    rsi_turn_entries(bars, _ind(bars), daily, None, {"theta": 30, "stop_atr": 1.5, "time_stop_days": 5})
+    v = bars.attrs.get("rsi_turn_verdicts", {})
+    assert len(v) == 1 and "has_quotes" in next(iter(v.values()))

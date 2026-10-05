@@ -17,6 +17,7 @@ from scipy import stats
 from core.models import (TradingMode, CommentaryType, SignalType, NewsImpact,
                          TradingSignal, Position, MarketData, NewsItem)
 from core.config import Config, config, config_manager, logger, TradingLossBreaker
+from core.turn_verdicts import TurnVerdicts
 from core.commentary import TradingCommentary, CommentarySystem
 from core.brain import TradingBrain
 from core.websocket_manager import ConnectionManager
@@ -64,7 +65,7 @@ from core.desk.store import load_plan as load_desk_plan
 from core.loops.desk_steps import now_et as desk_now_et, session_date_str as desk_session_date
 from core.swing_exits import (
     is_multiday, should_time_stop, should_earnings_eve_flatten,
-    load_earnings_dates, sessions_held,
+    load_earnings_dates, sessions_held, should_thesis_fail,
 )
 from analysis.anomaly import AnomalyDetector, DataValidator
 from analysis.behavioral import BehavioralAnalyzer
@@ -9440,8 +9441,6 @@ class TradingEngineWithCommentary:
                     hit, why = should_earnings_eve_flatten(position.symbol, _now_et, _earnings)
                 if not hit:
                     # v-turn-engine-2026-10-05: rsi_turn thesis invalidation (spec §3.6)
-                    from core.swing_exits import should_thesis_fail
-                    from core.turn_verdicts import TurnVerdicts
                     hit, why = should_thesis_fail(_reasoning, position.symbol, position.entry_time, _now_et,
                                                   TurnVerdicts.instance().latest(position.symbol))
                 if hit:

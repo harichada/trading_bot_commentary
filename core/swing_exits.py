@@ -146,7 +146,12 @@ def should_thesis_fail(reasoning: dict, symbol: str, entry_time: datetime, now: 
         return False, ""
     try:
         from strategies.families.turn_score import thesis_failed
-        if verdict.age_s(now) > max_age_s:
+        if abs(verdict.age_s(now)) > max_age_s:
+            return False, ""
+        # the verdict must post-date the fill, and the position gets one 15-minute bar before it can be judged
+        v_ts = verdict.ts.replace(tzinfo=None) if verdict.ts.tzinfo is not None else verdict.ts
+        e_ts = entry_time.replace(tzinfo=None) if getattr(entry_time, "tzinfo", None) is not None else entry_time
+        if v_ts <= e_ts or (now - e_ts).total_seconds() < 15 * 60:
             return False, ""
         theta = float((reasoning.get("fit_params") or {}).get("theta", verdict.theta))
         held = sessions_held(entry_time, now)

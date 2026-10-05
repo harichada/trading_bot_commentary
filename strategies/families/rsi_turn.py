@@ -126,9 +126,13 @@ def rsi_turn_entries(bars5, ind, daily, news, params) -> list[Entry]:
         if in_zone:
             # Side channel for the live adapter (ledger factor block, exit
             # verdict cache). bars5.attrs is already how the symbol travels.
-            verdicts = bars5.attrs.setdefault("rsi_turn_verdicts", {})
-            verdicts[bars5.index[i]] = {"score": score, "theta": theta, "vetoes": list(vetoes),
-                                         "cvd_60": ts._finite(row.get("mf_cvd_60")) or 0.0, **detail}
+            # Only the CURRENT bar's verdict is kept: pandas deep-copies attrs on
+            # every column access, so a growing dict would make a research run
+            # quadratic (review round 1). The live adapter reads only now_ts.
+            bars5.attrs["rsi_turn_verdicts"] = {bars5.index[i]: {
+                "score": score, "theta": theta, "vetoes": list(vetoes),
+                "cvd_60": ts._finite(row.get("mf_cvd_60")) or 0.0,
+                "has_quotes": ts._finite(row.get("mf_imb_ema")) is not None, **detail}}
         if not in_zone or vetoes or score < theta:
             continue
         atr = ts._finite(row.get("d_atr14"))

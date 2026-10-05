@@ -142,7 +142,7 @@ class SymbolMicro:
                  "_side_prev", "_total_volume", "_last_size", "_resync", "_session_volume",
                  "_blocks", "_nblocks", "_sizes", "_nsizes", "_large_floor", "_floor_minute",
                  "trades_seen", "_ts", "_session_rows", "_flushed_through", "dropped", "_warned",
-                 "_tv_max", "resyncs", "_warned_rows")
+                 "_tv_max", "resyncs", "_warned_rows", "_session_date")
 
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol.upper()
@@ -167,10 +167,10 @@ class SymbolMicro:
         self._last: Optional[float] = None
         self._last_trade_px: Optional[float] = None
         self._side_prev = 0
-        self._total_volume: Optional[float] = None
         self._last_size: Optional[float] = None
+        self._session_date: Optional[str] = None               # ET date the volume statistics belong to
         self._resync = False                                    # drop the next delta after a volume reset
-        self._tv_max = None                                     # highest total_volume seen (stale duplicates sit below it)
+        self._tv_max = None                                     # highest total_volume seen THIS SESSION (stale duplicates sit below it)
         self.resyncs = 0
         self._warned_rows = 0
         self._session_volume = 0.0
@@ -198,6 +198,7 @@ class SymbolMicro:
             with self._lock:
                 self._ts = ts
                 minute = int(ts.timestamp() // 60)
+                self._new_session_check(ts)
                 self._roll_to(minute)                       # every update advances the windows
                 bid_prev, ask_prev = self._bid, self._ask
                 size = self._trade_size(last_size, total_volume)
@@ -216,7 +217,8 @@ class SymbolMicro:
 
     def _trade_size(self, last_size: Optional[float], total_volume: Optional[float]) -> float:
         """Volume printed since the previous update, measured against the
-        HIGHEST total seen. A total below that high is a stale/out-of-order
+        HIGHEST total seen this session (the high-water resets with the ET
+        date, see `_new_session`). A total below that high is a stale/out-of-order
         duplicate (size 0, no rebase); a total below half of it is a session
         reset (rebase, count a resync, drop that first delta)."""
         size = 0.0
@@ -235,7 +237,6 @@ class SymbolMicro:
                 self._tv_max = tv
                 size = 0.0
             # else: tv <= max — stale duplicate, nothing printed
-            self._total_volume = tv
         elif last_size is not None and float(last_size) != (self._last_size or 0.0):
             size = float(last_size)
         if last_size is not None:
@@ -244,6 +245,22 @@ class SymbolMicro:
                 self._sizes[self._nsizes % LARGE_PRINT_SAMPLE] = float(last_size)
                 self._nsizes += 1
         return size
+
+    def _new_session_check(self, ts: datetime) -> None:
+        """Cumulative-volume statistics are per session: on the first update of
+        a new ET date the high-water, block median and session volume start
+        over (review round 1: a stale high-water from yesterday would classify
+        every print of a new day as a duplicate)."""
+        d = _et_date(ts)
+        if d != self._session_date:
+            self._session_date = d
+            self._tv_max = None
+            self._resync = False
+            self._session_volume = 0.0
+            self._nblocks = 0
+            self._nsizes = 0
+            self._large_floor = math.inf
+            self._floor_minute = -1
 
     def _block_is_suspect(self, size: float) -> bool:
         n = min(self._nblocks, LARGE_PRINT_SAMPLE)
@@ -464,10 +481,12 @@ class SymbolMicro:
         os.makedirs(out_dir, exist_ok=True)
         target = os.path.join(out_dir, f"{session_date}.parquet")
         if session_date not in by_date and not os.path.exists(target):
-            by_date[session_date] = []
+            by_date[session_date] = [{k: (pd.Timestamp(0, tz="UTC") if k == "t_open" else ("" if k == "aggressor_rule" else 0.0))
+                                      for k in _rec(datetime.fromtimestamp(0, tz=timezone.utc), np.zeros(_NFIELDS))}][:0]
         for d, recs_d in by_date.items():
             path = os.path.join(out_dir, f"{d}.parquet")
-            new = pd.DataFrame(recs_d)
+            new = pd.DataFrame(recs_d) if recs_d else pd.DataFrame(
+                columns=list(_rec(datetime.fromtimestamp(0, tz=timezone.utc), np.zeros(_NFIELDS))))
             if os.path.exists(path):
                 try:
                     old = pd.read_parquet(path)
@@ -495,10 +514,11 @@ def _et_date(t_utc: datetime) -> str:
 
 
 def _rec(t_utc: datetime, f: np.ndarray) -> dict:
-    vol = f[_VOL]
+    vol = f[_VOL]          # == buy + sell + unclassified + capped (capped blocks stay in vol/vwap by design)
     return {"t_open": t_utc,
             "buy_vol": f[_BUY], "sell_vol": f[_SELL], "unclassified_vol": f[_UNCLASS], "capped_vol": f[_CAPPED],
             "vol": vol, "n_buy": int(f[_NBUY]), "n_sell": int(f[_NSELL]), "n_updates": int(f[_NUPD]),
+            "n_trades": int(f[_NUPD]),   # schema parity with the tick-rule producer (research/.../micro.py)
             "n_quote_tagged": int(f[_NQUOTE]), "n_tick_tagged": int(f[_NTICK]),
             "vwap": f[_VWAPN] / vol if vol > 0 else float("nan"),
             "high": f[_HIGH], "low": f[_LOW], "close": f[_CLOSE],

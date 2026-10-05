@@ -259,7 +259,7 @@ def test_flush_twice_only_adds_rows_and_never_reemits_old_bins(tmp_path):
     n1 = len(pd.read_parquet(p1))
     # a restart-like second flush with two more minutes of ticks
     t_last = log[-1][0]
-    vol = sm._total_volume
+    vol = sm._tv_max
     for k in range(240):
         vol += 10
         sm.on_tick(t_last + timedelta(seconds=1 + k * 0.5), last=100.0, bid=99.95, ask=100.0, bid_size=5, ask_size=5, last_size=10, total_volume=vol)
@@ -410,3 +410,36 @@ def test_capped_block_is_separate_from_unclassified():
     snap = sm.snapshot()
     assert snap.capped_vol_15 == 5_000_000 and snap.unclassified_vol_15 == 0
     assert snap.buy_vol_15 + snap.sell_vol_15 + snap.unclassified_vol_15 + snap.capped_vol_15 == snap.vol_15
+
+
+# ── review round 1b ──────────────────────────────────────────────────
+
+def test_flushed_schema_matches_the_archive_producer(tmp_path):
+    import pandas as pd
+    from research.strategy_hunt.data.micro import features_5m
+    sm = SymbolMicro("MU")
+    _stream(sm, minutes=20)
+    df = pd.read_parquet(sm.flush(str(tmp_path), "2026-10-05"))
+    assert "n_trades" in df.columns and (df["n_trades"] == df["n_updates"]).all()
+    feats = features_5m(df.assign(t_open=df["t_open"].dt.tz_convert("America/New_York").dt.tz_localize(None)))
+    assert not feats.empty and feats["mf_n_trades_15"].iloc[-1] > 0
+
+
+def test_volume_high_water_resets_with_the_session():
+    sm = SymbolMicro("MU")
+    d1 = datetime(2026, 10, 5, 19, 0, tzinfo=timezone.utc)      # 15:00 ET
+    d2 = datetime(2026, 10, 6, 13, 35, tzinfo=timezone.utc)     # next day 09:35 ET
+    sm.on_tick(d1, last=100.05, last_size=100, total_volume=40_000_000, **_q())
+    sm.on_tick(d2, last=100.05, last_size=100, total_volume=25_000_000, **_q())   # yesterday's high would call this stale
+    sm.on_tick(d2 + timedelta(seconds=1), last=100.05, last_size=200, total_volume=25_000_200, **_q())
+    snap = sm.snapshot()
+    assert snap.vol_15 == 100 + 200 and snap.resyncs == 0
+
+
+def test_empty_day_file_has_the_schema(tmp_path):
+    import pandas as pd
+    sm = SymbolMicro("MU")
+    sm.on_tick(_ts(0), last=None, bid=100.0, ask=100.05, bid_size=1, ask_size=1, last_size=None, total_volume=None)
+    p = sm.flush(str(tmp_path), "2026-10-05")
+    df = pd.read_parquet(p)
+    assert len(df) == 0 and "t_open" in df.columns and "n_trades" in df.columns
