@@ -40,7 +40,7 @@ DEFAULT_ALLOCATION_CEILING = 5000.0
 KNOWN_FIT_FAMILIES = (
     "mr_20d", "mom_12_1", "dt_momentum", "gap_play", "vwap_reversion",
     "mean_rev_intraday", "low_vol_trend", "orb_inplay", "pead_smallcap", "rs_leader",
-    "rsi_dip", "rsi_fade",
+    "rsi_dip", "rsi_fade", "rsi_turn",
 )
 
 _ALLOWLIST_SIDES = ("long", "short")

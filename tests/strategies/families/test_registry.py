@@ -1,8 +1,8 @@
-"""Registry test: ensure all twenty-two families are available and well-formed."""
+"""Registry test: ensure all twenty-three families are available and well-formed."""
 import pytest
 
 
-def test_registry_has_twenty_two_unique_families_with_bounded_grids():
+def test_registry_has_twenty_three_unique_families_with_bounded_grids():
     from strategies.families import FAMILIES, family_names, get_family
     from strategies.families.common import HOLD_KINDS, grid_combos
     assert family_names() == sorted(FAMILIES)
@@ -14,8 +14,10 @@ def test_registry_has_twenty_two_unique_families_with_bounded_grids():
                              # Batch-2 factor families (Task C)
                              "mom_12_1", "low_vol_trend",
                              # RSI-extreme families (2026-10-05)
-                             "rsi_dip", "rsi_fade"}
-    assert len(FAMILIES) == 22
+                             "rsi_dip", "rsi_fade",
+                             # Adaptive RSI Turn engine (2026-10-05)
+                             "rsi_turn"}
+    assert len(FAMILIES) == 23
     for name, fam in FAMILIES.items():
         assert fam.name == name and callable(fam.fn) and 1 <= len(grid_combos(fam.grid)) <= 27
         assert fam.hold_kind in HOLD_KINDS and set(fam.sides) <= {"long", "short"}
