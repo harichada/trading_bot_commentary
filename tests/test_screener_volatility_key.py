@@ -47,6 +47,7 @@ def screener(monkeypatch):
 
     monkeypatch.setattr(s, "_get_yahoo_most_active", _yahoo_active)
     monkeypatch.setattr(s, "_get_yahoo_top_movers", _empty)
+    monkeypatch.setattr(s, "_get_yahoo_dollar_volume_leaders", _empty)
     monkeypatch.setattr(s, "_get_index_movers", _empty)
     monkeypatch.setattr(s, "_get_volatile_stocks", _empty)
     monkeypatch.setattr(s, "_refresh_quality_data", _noop)

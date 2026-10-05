@@ -43,6 +43,58 @@ LEVERAGED_ETF_BLOCKLIST = frozenset({
 })
 
 
+def _yahoo_scalar(v):
+    """Yahoo returns either a raw value or a {raw, fmt} dict."""
+    if isinstance(v, dict):
+        return v.get("raw", 0)
+    return v or 0
+
+
+def _parse_yahoo_quote(q: Dict[str, Any], source: str) -> Optional[Dict[str, Any]]:
+    """One Yahoo screener quote -> mover dict (None when it has no symbol)."""
+    sym = q.get("symbol")
+    if not sym:
+        return None
+    last_price = float(_yahoo_scalar(q.get("regularMarketPrice")) or 0)
+    net_change = float(_yahoo_scalar(q.get("regularMarketChange")) or 0)
+    pct_change = float(_yahoo_scalar(q.get("regularMarketChangePercent")) or 0)
+    volume = float(_yahoo_scalar(q.get("regularMarketVolume")) or 0)
+    return {
+        "symbol": sym,
+        "description": q.get("shortName", "") or q.get("longName", ""),
+        "last": last_price,
+        "change": net_change,
+        "percent_change": pct_change,
+        "volume": volume,
+        "direction": "up" if pct_change > 0 else "down" if pct_change < 0 else "neutral",
+        "source": source,
+    }
+
+
+def rank_by_dollar_volume(movers: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
+    """v-dollar-volume-source-2026-10-05: the `top_n` movers by last x volume,
+    highest first, each returned as a NEW dict carrying `dollar_volume`.
+    Names with a non-positive price or volume are dropped; duplicates keep
+    their first occurrence."""
+    ranked: List[Dict[str, Any]] = []
+    seen: set = set()
+    for m in movers:
+        sym = str(m.get("symbol") or "").upper()
+        if not sym or sym in seen:
+            continue
+        try:
+            price = float(m.get("last", 0) or m.get("price", 0) or 0)
+            volume = float(m.get("volume", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0 or volume <= 0 or price != price or volume != volume:
+            continue
+        seen.add(sym)
+        ranked.append({**m, "symbol": sym, "dollar_volume": price * volume})
+    ranked.sort(key=lambda x: x["dollar_volume"], reverse=True)
+    return ranked[:max(0, int(top_n))]
+
+
 class StockScreener:
     """Real-time stock screener using Schwab API"""
 
@@ -113,6 +165,19 @@ class StockScreener:
             yahoo_top = await self._get_yahoo_top_movers()
             all_movers.extend(yahoo_top)
 
+            # Source 0c (v-dollar-volume-source-2026-10-05): leaders by
+            # DOLLAR volume. Share-count and percent lists both miss a
+            # high-priced name on a heavy day (MU, 2026-10-01: $48.5B
+            # traded, +2.8%, never a candidate). Off via
+            # ENABLE_DOLLAR_VOLUME_SOURCE=0.
+            try:
+                from core.config import Config as _CfgDVS
+                _dv_enabled = _CfgDVS().ENABLE_DOLLAR_VOLUME_SOURCE
+            except Exception:
+                _dv_enabled = True
+            if _dv_enabled:
+                all_movers.extend(await self._get_yahoo_dollar_volume_leaders())
+
             # Source 1: EQUITY_ALL by VOLUME — today's most-active.
             # Catches RKLB-class names that are heavily traded but not
             # in the % movers leaderboard. This is THE source for the
@@ -182,7 +247,8 @@ class StockScreener:
                 # that qualifies for relaxed quality filtering
                 _source = mover.get('source', '')
                 _is_mover_source = _source in (
-                    'yahoo_most_active', 'yahoo_day_gainers', 'yahoo_day_losers'
+                    'yahoo_most_active', 'yahoo_day_gainers', 'yahoo_day_losers',
+                    'yahoo_dollar_volume',
                 )
                 mover['is_mover'] = _is_mover_source  # Tag for downstream use
                 
@@ -386,31 +452,18 @@ class StockScreener:
         self._movers_cache[cache_key] = (movers, time.time())
         return movers
 
-    async def _get_yahoo_most_active(self) -> List[Dict[str, Any]]:
-        """Fetch Yahoo Finance most-active list.
+    async def _yahoo_predefined_movers(self, scr_id: str, count: int, source: str,
+                                       label: str, enrich: bool = True) -> List[Dict[str, Any]]:
+        """Fetch one of Yahoo Finance's predefined screeners (the JSON that
+        powers finance.yahoo.com/markets/stocks/<list>/) and parse it into
+        mover dicts. Shared by the most-active, gainers/losers and
+        dollar-volume sources. Never raises: HTTP errors, schema drift and
+        network failures all return [] (the caller caches that).
 
-        v-yahoo-most-active-2026-05-11: hits the same undocumented JSON
-        endpoint that powers
-        https://finance.yahoo.com/markets/stocks/most-active/. Returns
-        the top ~30 most-traded names by current-session volume, no
-        auth required. Operator's #1 ask after noticing the bot's
-        Schwab-only screener kept missing retail catalyst names.
-
-        Defensive against:
-          - Yahoo rate-limiting (HTTP 429)
-          - schema drift (every field has a safe default)
-          - network hiccups (timeout=10s)
-          - sync `requests` blocking the event loop (offloaded via
-            asyncio.to_thread)
+        `enrich` adds the Schwab quote fields for each name; off for the
+        wide dollar-volume pull, where only the ranked survivors are enriched.
         """
-        cache_key = "movers_yahoo_most_active"
-        if cache_key in self._movers_cache:
-            cached_data, timestamp = self._movers_cache[cache_key]
-            if time.time() - timestamp < self._cache_timeout:
-                return cached_data
-
         import asyncio as _asyncio
-        movers: List[Dict[str, Any]] = []
 
         def _fetch():
             import requests
@@ -419,11 +472,10 @@ class StockScreener:
                 "formatted": "true",
                 "lang": "en-US",
                 "region": "US",
-                "scrIds": "most_actives",
-                "count": 30,
+                "scrIds": scr_id,
+                "count": int(count),
             }
             headers = {
-                # Yahoo blocks requests without a UA.
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -432,78 +484,93 @@ class StockScreener:
             }
             return requests.get(url, params=params, headers=headers, timeout=10)
 
+        movers: List[Dict[str, Any]] = []
         try:
             response = await _asyncio.to_thread(_fetch)
             if response.status_code != 200:
-                logger.warning(
-                    "screener: yahoo most-active returned HTTP %s",
-                    response.status_code,
-                )
-                self._movers_cache[cache_key] = ([], time.time())
+                logger.warning("screener: yahoo %s returned HTTP %s", label, response.status_code)
                 return []
-
             payload = response.json()
-            quotes = (
-                payload.get("finance", {})
-                .get("result", [{}])[0]
-                .get("quotes", [])
-            )
-
-            def _scalar(v):
-                """Yahoo returns either raw value or {raw, fmt} dict."""
-                if isinstance(v, dict):
-                    return v.get("raw", 0)
-                return v or 0
-
+            quotes = (payload.get("finance", {}).get("result", [{}])[0].get("quotes", []))
             for q in quotes:
-                sym = q.get("symbol")
-                if not sym:
+                mover = _parse_yahoo_quote(q, source)
+                if mover is None:
                     continue
-                last_price = float(_scalar(q.get("regularMarketPrice")) or 0)
-                net_change = float(_scalar(q.get("regularMarketChange")) or 0)
-                pct_change = float(_scalar(q.get("regularMarketChangePercent")) or 0)
-                volume = float(_scalar(q.get("regularMarketVolume")) or 0)
-
-                mover = {
-                    "symbol": sym,
-                    "description": q.get("shortName", "") or q.get("longName", ""),
-                    "last": last_price,
-                    "change": net_change,
-                    "percent_change": pct_change,
-                    "volume": volume,
-                    "direction": (
-                        "up" if pct_change > 0
-                        else "down" if pct_change < 0
-                        else "neutral"
-                    ),
-                    "source": "yahoo_most_active",
-                }
-
-                # Best-effort enrich from Schwab for full-quote fields
-                # downstream code expects (spread, bid/ask). Failure is
-                # fine — Yahoo data alone is enough for ranking.
-                try:
-                    quote = self._get_quote_data(sym)
-                    if quote:
-                        mover.update(quote)
-                except Exception as exc:
-                    logger.debug(f"quote enrich failed for {sym}: {exc}")
-
+                if enrich:
+                    self._enrich_with_quote(mover)
                 movers.append(mover)
+        except Exception as exc:
+            logger.warning("screener: yahoo %s raised %s: %s", label, type(exc).__name__, exc)
+        return movers
 
+    def _enrich_with_quote(self, mover: Dict[str, Any]) -> None:
+        try:
+            quote = self._get_quote_data(mover["symbol"])
+            if quote:
+                mover.update(quote)
+        except Exception as exc:
+            logger.debug(f"quote enrich failed for {mover.get('symbol')}: {exc}")
+
+    async def _get_yahoo_most_active(self) -> List[Dict[str, Any]]:
+        """Fetch Yahoo Finance most-active list (top ~30 by share volume).
+
+        v-yahoo-most-active-2026-05-11: operator's #1 ask after noticing the
+        Schwab-only screener kept missing retail catalyst names. Cached for
+        `_cache_timeout` seconds, including an empty result after a failure.
+        """
+        cache_key = "movers_yahoo_most_active"
+        if cache_key in self._movers_cache:
+            cached_data, timestamp = self._movers_cache[cache_key]
+            if time.time() - timestamp < self._cache_timeout:
+                return cached_data
+        movers = await self._yahoo_predefined_movers(
+            "most_actives", 30, "yahoo_most_active", "most-active")
+        if movers:
             logger.info(
                 "screener: yahoo most-active returned %d names (top: %s)",
-                len(movers),
-                ", ".join(m["symbol"] for m in movers[:5]),
+                len(movers), ", ".join(m["symbol"] for m in movers[:5]),
             )
-        except Exception as exc:
-            logger.warning(
-                "screener: yahoo most-active raised %s: %s",
-                type(exc).__name__, exc,
-            )
-
         self._movers_cache[cache_key] = (movers, time.time())
         return movers
+
+    async def _get_yahoo_dollar_volume_leaders(self) -> List[Dict[str, Any]]:
+        """v-dollar-volume-source-2026-10-05: Source 0c — the day's leaders
+        by DOLLAR volume (price x shares).
+
+        Every other pool source ranks by share count or by percent change,
+        so a high-priced name on a big day falls through: MU on 2026-10-01
+        traded $48.5B (the most on the tape) on 44M shares and +2.8% versus
+        the prior close and was never a candidate. This pulls Yahoo's
+        most-active list wide (`DOLLAR_VOLUME_SCAN_COUNT`, default 250 —
+        the deepest the endpoint serves), re-ranks it by last x volume and
+        keeps the top `DOLLAR_VOLUME_TOP_N`. Only the survivors are quote-
+        enriched. Tagged `yahoo_dollar_volume` so the mover-quality relax
+        applies, as it does to the other Yahoo lists.
+        """
+        cache_key = "movers_yahoo_dollar_volume"
+        if cache_key in self._movers_cache:
+            cached_data, timestamp = self._movers_cache[cache_key]
+            if time.time() - timestamp < self._cache_timeout:
+                return cached_data
+        try:
+            from core.config import Config as _CfgDV
+            count = _CfgDV().DOLLAR_VOLUME_SCAN_COUNT
+            top_n = _CfgDV().DOLLAR_VOLUME_TOP_N
+        except Exception:
+            count, top_n = 250, 30
+        wide = await self._yahoo_predefined_movers(
+            "most_actives", count, "yahoo_dollar_volume", "dollar-volume", enrich=False)
+        leaders = rank_by_dollar_volume(wide, top_n)
+        for mover in leaders:
+            self._enrich_with_quote(mover)
+        if leaders:
+            logger.info(
+                "screener: yahoo dollar-volume leaders: %d of %d scanned (top: %s)",
+                len(leaders), len(wide),
+                ", ".join("%s $%.1fB" % (m["symbol"], m["dollar_volume"] / 1e9) for m in leaders[:5]),
+            )
+        self._movers_cache[cache_key] = (leaders, time.time())
+        return leaders
 
     async def _get_yahoo_top_movers(self) -> List[Dict[str, Any]]:
         """v-yahoo-top-movers-2026-05-20: fetch Yahoo day_gainers + day_losers.

@@ -1492,6 +1492,15 @@ it never appears in `ps` or the log.
 > it. Remove a symbol only when its external position is closed, or the bot
 > will treat any later position in it as its own to manage.
 
+> **2026-10-05 — dollar-volume screener source.** The mover pool gains Source 0c:
+> Yahoo's most-active list pulled 250 deep and re-ranked by price x shares, top
+> 30 kept (`ENABLE_DOLLAR_VOLUME_SOURCE`, `DOLLAR_VOLUME_SCAN_COUNT`,
+> `DOLLAR_VOLUME_TOP_N`; yaml `trading.*` equivalents). Share-count and
+> percent-change lists both missed MU on 2026-10-01 ($48.5B traded, +2.8% vs
+> prior close, never a candidate). Log line: `screener: yahoo dollar-volume
+> leaders: N of M scanned (top: ...)`. The relaxed mover-quality filter applies
+> to this source like the other Yahoo lists.
+
 ### 9.9 Risk Console
 
 The Risk Console (`core/settings_console.py`, `core/settings_console_store.py`,

@@ -2730,6 +2730,39 @@ class Config:
         return bool(self.manager.get('trading.enable_mover_quality_relax', True))
 
     @property
+    def ENABLE_DOLLAR_VOLUME_SOURCE(self) -> bool:
+        """v-dollar-volume-source-2026-10-05: add the day's dollar-volume
+        leaders (price x shares) to the screener pool. Share-count and
+        percent-change lists both miss a high-priced name on a heavy day.
+        Default True. Env ENABLE_DOLLAR_VOLUME_SOURCE or yaml
+        trading.enable_dollar_volume_source."""
+        env_val = os.getenv("ENABLE_DOLLAR_VOLUME_SOURCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_dollar_volume_source', True))
+
+    @property
+    def DOLLAR_VOLUME_SCAN_COUNT(self) -> int:
+        """How deep to pull Yahoo's most-active list before re-ranking by
+        dollar volume. Default 250 (the deepest the endpoint serves);
+        clamped to 30..250. yaml trading.dollar_volume_scan_count."""
+        try:
+            n = int(self.manager.get('trading.dollar_volume_scan_count', 250))
+        except (TypeError, ValueError):
+            n = 250
+        return max(30, min(250, n))
+
+    @property
+    def DOLLAR_VOLUME_TOP_N(self) -> int:
+        """How many dollar-volume leaders enter the pool. Default 30;
+        clamped to 5..100. yaml trading.dollar_volume_top_n."""
+        try:
+            n = int(self.manager.get('trading.dollar_volume_top_n', 30))
+        except (TypeError, ValueError):
+            n = 30
+        return max(5, min(100, n))
+
+    @property
     def MIN_MOVER_PRICE(self) -> float:
         """Minimum price floor for mover-sourced symbols.
         
