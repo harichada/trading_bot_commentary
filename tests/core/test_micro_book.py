@@ -161,7 +161,7 @@ def test_flush_writes_one_row_per_minute(tmp_path):
     df = pd.read_parquet(path)
     assert path.endswith("MU/2026-10-05.parquet")
     assert 6 <= len(df) <= 8
-    for col in ("t_open", "buy_vol", "sell_vol", "vol", "vwap", "high", "low", "close", "large_vol", "n_trades"):
+    for col in ("t_open", "buy_vol", "sell_vol", "vol", "vwap", "high", "low", "close", "large_vol", "n_updates", "capped_vol"):
         assert col in df.columns
     assert (df["buy_vol"] + df["sell_vol"] == df["vol"]).all()
 
@@ -224,7 +224,7 @@ def test_volume_reset_does_not_book_a_phantom_print():
     sm.on_tick(_ts(2), last=100.05, last_size=100, total_volume=500, **q)             # reset / out of order
     sm.on_tick(_ts(3), last=100.05, last_size=400, total_volume=1_000_400, **q)       # first delta after reset: dropped
     sm.on_tick(_ts(4), last=100.05, last_size=100, total_volume=1_000_500, **q)
-    assert sm.snapshot().vol_15 == 100 + 200 + 100
+    assert sm.snapshot().vol_15 == 100 + 200 + 100 and sm.snapshot().resyncs == 1
 
 
 def test_implausible_block_is_unclassified_not_a_side():
@@ -237,8 +237,8 @@ def test_implausible_block_is_unclassified_not_a_side():
     vol += 5_000_000
     sm.on_tick(_ts(61), last=100.05, last_size=100, total_volume=vol, **q)
     snap = sm.snapshot()
-    assert snap.unclassified_vol_15 == 5_000_000 and snap.buy_vol_15 == 6000
-    assert snap.buy_vol_15 + snap.sell_vol_15 + snap.unclassified_vol_15 == snap.vol_15
+    assert snap.capped_vol_15 == 5_000_000 and snap.buy_vol_15 == 6000
+    assert snap.buy_vol_15 + snap.sell_vol_15 + snap.unclassified_vol_15 + snap.capped_vol_15 == snap.vol_15
 
 
 def test_first_print_uses_quote_in_the_same_update_and_side_zero_is_accounted():
@@ -294,3 +294,118 @@ def test_concurrent_writer_and_reader_stay_consistent():
     _stream(sm, minutes=30)
     stop.set(); t.join()
     assert not bad
+
+
+# ── review round 1 findings ──────────────────────────────────────────
+
+def _q():
+    return dict(bid=100.0, ask=100.05, bid_size=500, ask_size=300)
+
+
+def test_alternating_total_volume_is_a_stale_duplicate_not_a_silence():
+    sm = SymbolMicro("MU")
+    tv = 1_000_000
+    sm.on_tick(_ts(0), last=100.05, last_size=100, total_volume=tv, **_q())
+    for i in range(1, 80):
+        if i % 2:
+            tv += 50
+            sm.on_tick(_ts(i), last=100.05, last_size=50, total_volume=tv, **_q())
+        else:
+            sm.on_tick(_ts(i), last=100.05, last_size=50, total_volume=tv - 10_000, **_q())   # stale replay
+    snap = sm.snapshot()
+    assert snap.vol_15 == 100 + 40 * 50 and snap.resyncs == 0
+    sm.on_tick(_ts(100), last=100.05, last_size=10, total_volume=100, **_q())      # true session reset
+    sm.on_tick(_ts(101), last=100.05, last_size=10, total_volume=110, **_q())
+    snap = sm.snapshot()
+    assert snap.resyncs == 1 and snap.vol_15 == 100 + 40 * 50 + 10
+
+
+def test_backwards_clock_keeps_the_rows_and_keeps_writing(tmp_path):
+    import pandas as pd
+    sm = SymbolMicro("MU")
+    _stream(sm, minutes=10)
+    p = sm.flush(str(tmp_path), "2026-10-05")
+    n1 = len(pd.read_parquet(p))
+    assert n1 >= 9
+    sm.on_tick(_ts(-3600), last=100.05, last_size=10, total_volume=(sm._tv_max or 0) + 10, **_q())   # clock jumped back an hour
+    for k in range(1, 300):
+        sm.on_tick(_ts(-3600 + k), last=100.05, last_size=10, total_volume=(sm._tv_max or 0) + 10, **_q())
+    p2 = sm.flush(str(tmp_path), "2026-10-05")
+    df = pd.read_parquet(p2)
+    assert len(df) > n1 and df["t_open"].is_unique
+
+
+def test_flush_does_not_freeze_the_live_minute(tmp_path):
+    import pandas as pd
+    sm = SymbolMicro("MU")
+    tv = 0
+    for i in range(10):
+        tv += 100
+        sm.on_tick(_ts(i), last=100.05, last_size=100, total_volume=tv, **_q())
+    sm.flush(str(tmp_path), "2026-10-05")
+    for i in range(10, 59):
+        tv += 100
+        sm.on_tick(_ts(i), last=100.05, last_size=100, total_volume=tv, **_q())
+    sm.on_tick(_ts(61), last=100.05, last_size=100, total_volume=tv + 100, **_q())    # next minute
+    p = sm.flush(str(tmp_path), "2026-10-05")
+    df = pd.read_parquet(p).sort_values("t_open")
+    assert df["vol"].iloc[0] == 59 * 100
+
+
+def test_merge_keeps_the_fuller_row_after_a_restart(tmp_path):
+    import pandas as pd
+    a = SymbolMicro("MU")
+    tv = 0
+    for i in range(50):
+        tv += 100
+        a.on_tick(_ts(i), last=100.05, last_size=100, total_volume=tv, **_q())
+    a.on_tick(_ts(61), last=100.05, last_size=100, total_volume=tv + 100, **_q())
+    a.flush(str(tmp_path), "2026-10-05")
+    b = SymbolMicro("MU")                      # restart inside the first minute's window
+    b.on_tick(_ts(30), last=100.05, last_size=100, total_volume=200, **_q())
+    b.on_tick(_ts(31), last=100.05, last_size=100, total_volume=300, **_q())
+    b.on_tick(_ts(62), last=100.05, last_size=100, total_volume=400, **_q())
+    p = b.flush(str(tmp_path), "2026-10-05")
+    df = pd.read_parquet(p).sort_values("t_open")
+    assert df["vol"].iloc[0] == 5000 and df["t_open"].is_unique
+
+
+def test_rows_survive_a_failed_write(tmp_path, monkeypatch):
+    import pandas as pd
+    sm = SymbolMicro("MU")
+    _stream(sm, minutes=5)
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        sm.flush(str(tmp_path), "2026-10-05")
+    monkeypatch.undo()
+    p = sm.flush(str(tmp_path), "2026-10-05")
+    assert len(pd.read_parquet(p)) >= 4
+
+
+def test_two_sessions_without_a_flush_land_in_their_own_files(tmp_path):
+    import pandas as pd
+    sm = SymbolMicro("MU")
+    day1 = datetime(2026, 10, 5, 15, 0, tzinfo=timezone.utc)
+    day2 = datetime(2026, 10, 6, 15, 0, tzinfo=timezone.utc)
+    tv = 0
+    for base in (day1, day2):
+        for i in range(5 * 60):
+            if i % 10 == 0:
+                tv += 100
+            sm.on_tick(base + timedelta(seconds=i), last=100.05, last_size=100, total_volume=tv, **_q())
+    sm.flush(str(tmp_path), "2026-10-06")
+    assert (tmp_path / "MU" / "2026-10-05.parquet").exists() and (tmp_path / "MU" / "2026-10-06.parquet").exists()
+    d1 = pd.read_parquet(tmp_path / "MU" / "2026-10-05.parquet")
+    assert len(d1) >= 4 and d1["t_open"].dt.date.astype(str).eq("2026-10-05").all()
+
+
+def test_capped_block_is_separate_from_unclassified():
+    sm = SymbolMicro("MU")
+    tv = 0
+    for i in range(60):
+        tv += 100
+        sm.on_tick(_ts(i), last=100.05, last_size=100, total_volume=tv, **_q())
+    sm.on_tick(_ts(61), last=100.05, last_size=100, total_volume=tv + 5_000_000, **_q())
+    snap = sm.snapshot()
+    assert snap.capped_vol_15 == 5_000_000 and snap.unclassified_vol_15 == 0
+    assert snap.buy_vol_15 + snap.sell_vol_15 + snap.unclassified_vol_15 + snap.capped_vol_15 == snap.vol_15

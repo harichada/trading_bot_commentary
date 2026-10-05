@@ -48,16 +48,17 @@ SPR_HALF_LIFE_S = 300.0
 LARGE_PRINT_PCTL = 95.0
 LARGE_PRINT_SAMPLE = 2048      # last_size values kept for the session percentile
 MAX_SYMBOLS = 128
-MAX_SESSION_ROWS = 600         # ~1.5 sessions of completed bins before the flush drains them
+MAX_SESSION_ROWS = 1600        # > one 04:00-16:05 session (725 min) plus slack; oldest dropped beyond
 BLOCK_CAP_MULT = 50.0          # a volume block larger than 50x the median block is suspect
 BLOCK_CAP_SESSION_FRAC = 0.05  # ...or larger than 5% of the session's volume so far
 WARN_EVERY = 500
 
 # bin field indices — additive fields first (retired by subtraction), then the extrema
-_BUY, _SELL, _VOL, _VWAPN, _LARGE, _LARGE_BUY, _LARGE_SELL, _NUPD, _NBUY, _NSELL, _NTICK, _NQUOTE, _UNCLASS = range(13)
-_ADDITIVE = 13
-_HIGH, _LOW, _CLOSE = 13, 14, 15
-_NFIELDS = 16
+(_BUY, _SELL, _VOL, _VWAPN, _LARGE, _LARGE_BUY, _LARGE_SELL, _NUPD, _NBUY, _NSELL, _NTICK, _NQUOTE,
+ _UNCLASS, _CAPPED) = range(14)
+_ADDITIVE = 14
+_HIGH, _LOW, _CLOSE = 14, 15, 16
+_NFIELDS = 17
 
 
 def aggressor_tick_rule(price: float, price_prev: Optional[float], side_prev: int) -> int:
@@ -126,7 +127,9 @@ class MicroSnapshot:
     ask_size: float
     last: Optional[float]
     dropped_updates: int
-    minute_close: np.ndarray    # last 60 minute closes (oldest first, NaN where empty)
+    capped_vol_15: float        # volume blocks the cap refused to classify
+    resyncs: int                # total_volume resets seen this session
+    minute_close: np.ndarray    # last 60 minute closes (oldest first, NaN where empty); head_minute is -1 before the first update
 
 
 class SymbolMicro:
@@ -138,7 +141,8 @@ class SymbolMicro:
                  "_bid", "_ask", "_bid_size", "_ask_size", "_last", "_last_trade_px",
                  "_side_prev", "_total_volume", "_last_size", "_resync", "_session_volume",
                  "_blocks", "_nblocks", "_sizes", "_nsizes", "_large_floor", "_floor_minute",
-                 "trades_seen", "_ts", "_session_rows", "_flushed_through", "dropped", "_warned")
+                 "trades_seen", "_ts", "_session_rows", "_flushed_through", "dropped", "_warned",
+                 "_tv_max", "resyncs", "_warned_rows")
 
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol.upper()
@@ -166,6 +170,9 @@ class SymbolMicro:
         self._total_volume: Optional[float] = None
         self._last_size: Optional[float] = None
         self._resync = False                                    # drop the next delta after a volume reset
+        self._tv_max = None                                     # highest total_volume seen (stale duplicates sit below it)
+        self.resyncs = 0
+        self._warned_rows = 0
         self._session_volume = 0.0
         self._blocks = np.zeros(LARGE_PRINT_SAMPLE, dtype=np.float64)   # recent block sizes (cap statistic)
         self._nblocks = 0
@@ -208,20 +215,26 @@ class SymbolMicro:
                 logger.warning("micro_book: update dropped for %s (%d so far): %s", self.symbol, self.dropped, exc)
 
     def _trade_size(self, last_size: Optional[float], total_volume: Optional[float]) -> float:
-        """Volume printed since the previous update. A decreasing total
-        (session reset, out-of-order update) rebases and marks the next delta
-        for dropping; an implausibly large block is counted into volume only."""
+        """Volume printed since the previous update, measured against the
+        HIGHEST total seen. A total below that high is a stale/out-of-order
+        duplicate (size 0, no rebase); a total below half of it is a session
+        reset (rebase, count a resync, drop that first delta)."""
         size = 0.0
         if total_volume is not None:
             tv = float(total_volume)
-            if self._total_volume is None:
+            if self._tv_max is None:
                 size = float(last_size) if last_size is not None else 0.0
-            elif tv > self._total_volume:
-                size = 0.0 if self._resync else tv - self._total_volume
+                self._tv_max = tv
+            elif tv > self._tv_max:
+                size = 0.0 if self._resync else tv - self._tv_max   # first delta after a reset is unknowable
                 self._resync = False
-            elif tv < self._total_volume:
+                self._tv_max = tv
+            elif tv < 0.5 * self._tv_max:
+                self.resyncs += 1
                 self._resync = True
+                self._tv_max = tv
                 size = 0.0
+            # else: tv <= max — stale duplicate, nothing printed
             self._total_volume = tv
         elif last_size is not None and float(last_size) != (self._last_size or 0.0):
             size = float(last_size)
@@ -260,9 +273,10 @@ class SymbolMicro:
 
     def _apply_trade(self, minute: int, px: float, size: float, bid_prev, ask_prev) -> None:
         suspect = self._block_is_suspect(size)
-        self._blocks[self._nblocks % LARGE_PRINT_SAMPLE] = size
-        self._nblocks += 1
-        self._session_volume += size
+        if not suspect:
+            self._blocks[self._nblocks % LARGE_PRINT_SAMPLE] = size
+            self._nblocks += 1
+            self._session_volume += size
         self.trades_seen += 1
         b = self._bins[minute % BINS]
         inc = np.zeros(_ADDITIVE, dtype=np.float64)
@@ -270,7 +284,7 @@ class SymbolMicro:
         inc[_VWAPN] = px * size
         inc[_NUPD] = 1
         if suspect:
-            inc[_UNCLASS] = size
+            inc[_CAPPED] = size
             if self._warned < 5:
                 self._warned += 1
                 logger.warning("micro_book: %s volume block %.0f exceeds the cap; counted as unclassified", self.symbol, size)
@@ -311,8 +325,11 @@ class SymbolMicro:
         if self._head == minute:
             return
         if self._head < 0 or minute < self._head:
-            if minute < self._head:                      # clock went backwards: start over
+            if minute < self._head:                      # clock went backwards: keep what we have, start over
+                for slot in range(BINS):
+                    self._stash(slot)
                 self._bin_minute[:] = -1
+                self._flushed_through = -1
             self._tot15[:] = 0
             self._tot60[:] = 0
             self._head = minute
@@ -350,8 +367,8 @@ class SymbolMicro:
         if m < 0 or self._bins[slot, _NUPD] <= 0 or m <= self._flushed_through:
             return
         if len(self._session_rows) >= MAX_SESSION_ROWS:
-            if self._warned < 6:
-                self._warned += 1
+            if self._warned_rows < 3:
+                self._warned_rows += 1
                 logger.warning("micro_book: %s session rows exceed %d without a flush; oldest dropped", self.symbol, MAX_SESSION_ROWS)
             del self._session_rows[0]
         self._session_rows.append(np.concatenate(([m], self._bins[slot].copy())))
@@ -390,7 +407,7 @@ class SymbolMicro:
             bid, ask, last = self._bid, self._ask, self._last
             bs, asz = self._bid_size, self._ask_size
             imb, spr, floor, ts, head = self._imb_ema, self._spr_ema, self._large_floor, self._ts, self._head
-            dropped = self.dropped
+            dropped, resyncs = self.dropped, self.resyncs
         now = now or datetime.now(timezone.utc)
         age = (now - ts).total_seconds() if ts is not None and ts.tzinfo is not None and now.tzinfo is not None else math.inf
         vol15 = t15[_VOL]
@@ -407,58 +424,86 @@ class SymbolMicro:
             large_print_floor=float(floor) if math.isfinite(floor) else 0.0,
             n_updates_15=int(t15[_NUPD]), n_quote_tagged_15=int(t15[_NQUOTE]), n_tick_tagged_15=int(t15[_NTICK]),
             imb_ema=float(imb), spread_ema=float(spr), bid=bid, ask=ask, bid_size=float(bs), ask_size=float(asz),
-            last=last, dropped_updates=int(dropped), minute_close=closes,
+            last=last, dropped_updates=int(dropped), capped_vol_15=float(t15[_CAPPED]), resyncs=int(resyncs),
+            minute_close=closes,
         )
 
     # ── persistence ─────────────────────────────────────────────────
 
     def flush(self, root: str, session_date: str) -> str:
-        """Append every minute bin not yet written to
-        `<root>/<SYMBOL>/<session_date>.parquet` (one row per minute, UTC
-        `t_open`), merging with rows already on disk, via a temp file and
-        rename. A second flush of the same day can only add rows."""
+        """Append every completed minute bin not yet written to
+        `<root>/<SYMBOL>/<date>.parquet` (one row per minute, UTC `t_open`),
+        one file per ET session date the rows belong to, merging with rows
+        already on disk (the fuller row wins), via a temp file and rename.
+        The live minute is written but not marked final, so the rest of it
+        lands on the next flush. Rows are released only after the write
+        succeeded. Returns the path for `session_date`."""
         import pandas as pd
         with self._lock:
             rows = list(self._session_rows)
+            head = self._head
             for slot in range(BINS):
                 m = self._bin_minute[slot]
                 if m > self._flushed_through and self._bins[slot, _NUPD] > 0:
                     rows.append(np.concatenate(([m], self._bins[slot].copy())))
-            self._session_rows = []
-            written_through = max([int(r[0]) for r in rows], default=self._flushed_through)
+            flushed_through = self._flushed_through
         recs = {}
         for r in rows:
             m = int(r[0])
-            if m <= self._flushed_through or m in recs:
+            if m <= flushed_through:
                 continue
-            f = r[1:]
-            vol = f[_VOL]
-            recs[m] = {"t_open": datetime.fromtimestamp(m * 60, tz=timezone.utc),
-                       "buy_vol": f[_BUY], "sell_vol": f[_SELL], "unclassified_vol": f[_UNCLASS], "vol": vol,
-                       "n_buy": int(f[_NBUY]), "n_sell": int(f[_NSELL]), "n_updates": int(f[_NUPD]),
-                       "n_trades": int(f[_NUPD]),
-                       "n_quote_tagged": int(f[_NQUOTE]), "n_tick_tagged": int(f[_NTICK]),
-                       "vwap": f[_VWAPN] / vol if vol > 0 else float("nan"),
-                       "high": f[_HIGH], "low": f[_LOW], "close": f[_CLOSE],
-                       "large_vol": f[_LARGE], "large_buy": f[_LARGE_BUY], "large_sell": f[_LARGE_SELL],
-                       "aggressor_rule": "quote_conflated"}
+            if m not in recs or r[1 + _NUPD] > recs[m][1 + _NUPD]:
+                recs[m] = r
+        final_through = max([m for m in recs if m != head], default=flushed_through)
+        by_date: dict = {}
+        for m, r in recs.items():
+            t_utc = datetime.fromtimestamp(m * 60, tz=timezone.utc)
+            et_date = _et_date(t_utc)
+            by_date.setdefault(et_date, []).append(_rec(t_utc, r[1:]))
         out_dir = os.path.join(root, self.symbol)
         os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, f"{session_date}.parquet")
-        new = pd.DataFrame(list(recs.values()))
-        if os.path.exists(path):
-            try:
-                old = pd.read_parquet(path)
-                new = pd.concat([old, new], ignore_index=True) if not new.empty else old
-                new = new.drop_duplicates(subset="t_open", keep="last").sort_values("t_open")
-            except Exception as exc:
-                logger.warning("micro_book: could not merge existing %s: %s", path, exc)
-        tmp = path + ".tmp"
-        new.to_parquet(tmp, index=False)
-        os.replace(tmp, path)
+        target = os.path.join(out_dir, f"{session_date}.parquet")
+        if session_date not in by_date and not os.path.exists(target):
+            by_date[session_date] = []
+        for d, recs_d in by_date.items():
+            path = os.path.join(out_dir, f"{d}.parquet")
+            new = pd.DataFrame(recs_d)
+            if os.path.exists(path):
+                try:
+                    old = pd.read_parquet(path)
+                    new = pd.concat([old, new], ignore_index=True) if not new.empty else old
+                    if not new.empty:
+                        new = (new.sort_values(["t_open", "n_updates"]).drop_duplicates(subset="t_open", keep="last")
+                               .sort_values("t_open").reset_index(drop=True))
+                except Exception as exc:
+                    logger.warning("micro_book: could not merge existing %s: %s", path, exc)
+            tmp = path + ".tmp"
+            new.to_parquet(tmp, index=False)
+            os.replace(tmp, path)
         with self._lock:
-            self._flushed_through = max(self._flushed_through, written_through)
-        return path
+            self._session_rows = [r for r in self._session_rows if int(r[0]) > final_through]
+            self._flushed_through = max(self._flushed_through, final_through)
+        return target
+
+
+def _et_date(t_utc: datetime) -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        return t_utc.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    except Exception:
+        return t_utc.strftime("%Y-%m-%d")
+
+
+def _rec(t_utc: datetime, f: np.ndarray) -> dict:
+    vol = f[_VOL]
+    return {"t_open": t_utc,
+            "buy_vol": f[_BUY], "sell_vol": f[_SELL], "unclassified_vol": f[_UNCLASS], "capped_vol": f[_CAPPED],
+            "vol": vol, "n_buy": int(f[_NBUY]), "n_sell": int(f[_NSELL]), "n_updates": int(f[_NUPD]),
+            "n_quote_tagged": int(f[_NQUOTE]), "n_tick_tagged": int(f[_NTICK]),
+            "vwap": f[_VWAPN] / vol if vol > 0 else float("nan"),
+            "high": f[_HIGH], "low": f[_LOW], "close": f[_CLOSE],
+            "large_vol": f[_LARGE], "large_buy": f[_LARGE_BUY], "large_sell": f[_LARGE_SELL],
+            "aggressor_rule": "quote_conflated"}
 
 
 class MicroBook:
@@ -496,8 +541,9 @@ class MicroBook:
         def stamp(item):
             t = item[1]._ts
             return t.timestamp() if t is not None else -1.0
-        victim = min(self._symbols.items(), key=stamp)[0]
-        logger.info("micro_book: evicting %s (cap %d symbols)", victim, self._max)
+        victim, sm = min(self._symbols.items(), key=stamp)
+        logger.info("micro_book: evicting %s (cap %d symbols, %d unflushed rows)", victim, self._max,
+                    len(sm._session_rows))
         del self._symbols[victim]
 
     def on_tick(self, symbol: str, ts: datetime, **fields) -> None:

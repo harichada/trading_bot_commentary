@@ -224,15 +224,11 @@ class SchwabQuoteStream:
                 # was the only symbol updating. Now: merge the partial
                 # update into whatever's in the cache, only updating the
                 # fields that arrived in THIS tick.
-                last = record.get("LAST_PRICE")
+                last = _field(record, "LAST_PRICE", "3")
                 if last is None:
-                    last = record.get("3") or record.get("MARK") or record.get("CLOSE_PRICE")
-                bid = record.get("BID_PRICE")
-                if bid is None:
-                    bid = record.get("1")
-                ask = record.get("ASK_PRICE")
-                if ask is None:
-                    ask = record.get("2")
+                    last = record.get("MARK") or record.get("CLOSE_PRICE")
+                bid = _field(record, "BID_PRICE", "1")
+                ask = _field(record, "ASK_PRICE", "2")
                 # v-stream-netchange-2026-06-11: NET_CHANGE has been in
                 # the subscription since v-stream-rich-fields-2026-05-01
                 # but was discarded here. "18" is the LEVELONE_EQUITIES
