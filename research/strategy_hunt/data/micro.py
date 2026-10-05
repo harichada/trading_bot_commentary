@@ -21,6 +21,12 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+# The archive collector stamped every print with Eastern STANDARD time year-round
+# (verified 2026-10-05: 2024-10-02 prints run 10:30→16:59 EDT, 2025-02-03 prints
+# 09:30→15:59 EST). Reading the stored instant in a fixed -05:00 zone and dropping
+# the zone recovers the wall-clock the collector meant, in both regimes.
+ARCHIVE_TZ = "Etc/GMT+5"
+
 MF_COLUMNS = ("mf_buy_vol_15", "mf_sell_vol_15", "mf_vol_15", "mf_cvd_15", "mf_cvd_60", "mf_vol_60",
               "mf_sell_share_15", "mf_large_buy_15", "mf_large_sell_15", "mf_large_vol_15",
               "mf_n_trades_15", "mf_aggressor_rule")
@@ -127,16 +133,27 @@ def load_ticks(engine: Any, symbol: str, day: str) -> pd.DataFrame:
     day and run this off-hours."""
     from sqlalchemy import text
     q = text("SELECT ts, price, size FROM trade_ticks WHERE symbol = :s AND ts >= :d0 AND ts < :d1 ORDER BY ts")
-    d0 = pd.Timestamp(day).tz_localize("America/New_York") + pd.Timedelta(hours=9, minutes=30)
-    d1 = pd.Timestamp(day).tz_localize("America/New_York") + pd.Timedelta(hours=16)
+    d0, d1 = archive_session_window(day)
     with engine.connect() as c:
         df = pd.read_sql(q, c, params={"s": symbol.upper(), "d0": d0, "d1": d1})
     if df.empty:
         return df
-    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("America/New_York").dt.tz_localize(None)
+    df["ts"] = archive_wall_clock(df["ts"])
     df["price"] = df["price"].astype(float)
     df["size"] = df["size"].astype(float)
     return df
+
+
+def archive_session_window(day: str) -> tuple:
+    """The stored instants that bracket the regular session of `day` as the
+    collector labelled it (fixed -05:00 wall-clock)."""
+    base = pd.Timestamp(day).tz_localize(ARCHIVE_TZ)
+    return base + pd.Timedelta(hours=9, minutes=30), base + pd.Timedelta(hours=16)
+
+
+def archive_wall_clock(ts: pd.Series) -> pd.Series:
+    """Stored tz-aware instants → the naive ET wall-clock the collector meant."""
+    return pd.to_datetime(ts, utc=True).dt.tz_convert(ARCHIVE_TZ).dt.tz_localize(None)
 
 
 def load_minute_bins(root: Path, symbol: str) -> pd.DataFrame:

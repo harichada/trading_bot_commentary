@@ -65,3 +65,13 @@ def test_join_micro_fills_missing_bars_and_empty_feats():
 def test_empty_inputs():
     assert minute_bins_from_ticks(pd.DataFrame(columns=["ts", "price", "size"])).empty
     assert features_5m(pd.DataFrame()).empty
+
+
+def test_archive_wall_clock_undoes_the_collectors_fixed_offset():
+    from research.strategy_hunt.data.micro import archive_session_window, archive_wall_clock
+    # a print stored as 10:30 EDT on an October day was really the 09:30 open
+    s = pd.Series([pd.Timestamp("2024-10-02 10:30:00-04:00"), pd.Timestamp("2025-02-03 09:30:00-05:00")])
+    wall = archive_wall_clock(s)
+    assert wall.dt.strftime("%H:%M").tolist() == ["09:30", "09:30"]
+    d0, d1 = archive_session_window("2024-10-02")
+    assert d0.tz_convert("America/New_York").strftime("%H:%M") == "10:30" and (d1 - d0) == pd.Timedelta(hours=6, minutes=30)
