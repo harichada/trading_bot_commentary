@@ -315,7 +315,8 @@ def test_alternating_total_volume_is_a_stale_duplicate_not_a_silence():
     snap = sm.snapshot()
     assert snap.vol_15 == 100 + 40 * 50 and snap.resyncs == 0
     sm.on_tick(_ts(100), last=100.05, last_size=10, total_volume=100, **_q())      # true session reset
-    sm.on_tick(_ts(101), last=100.05, last_size=10, total_volume=110, **_q())
+    sm.on_tick(_ts(101), last=100.05, last_size=10, total_volume=110, **_q())      # first delta after a reset: unknowable, dropped
+    sm.on_tick(_ts(102), last=100.05, last_size=10, total_volume=120, **_q())      # then counting resumes
     snap = sm.snapshot()
     assert snap.resyncs == 1 and snap.vol_15 == 100 + 40 * 50 + 10
 
