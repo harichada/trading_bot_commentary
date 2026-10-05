@@ -5,7 +5,7 @@ fit lane run the same code.
 Spec: docs/superpowers/specs/2026-10-05-adaptive-rsi-turn-design.md §3–4.
 
 Per 5-minute bar, for symbols whose lagged daily RSI(14) is below the symbol's
-own trailing 5th percentile (`core.turn_score.zone_component`):
+own trailing 5th percentile (`strategies.families.turn_score.zone_component`):
   Z  zone depth,  M  15-minute RSI momentum/divergence,  A  tape absorption
   (from the `mf_*` columns on `ind`, NaN → 0),  B  Level 1 book pressure (from
   `mf_imb_ema` etc. when the live book provides them; the archive has no
@@ -21,7 +21,7 @@ from typing import Any, Mapping, Optional
 import numpy as np
 import pandas as pd
 
-from core import turn_score as ts
+from strategies.families import turn_score as ts
 from strategies.families.common import Family, make_entry, spaced_by_sessions
 from strategies.families.models import Entry
 
@@ -123,6 +123,12 @@ def rsi_turn_entries(bars5, ind, daily, news, params) -> list[Entry]:
             row, zone, rsi15_all[max(0, j - DIV_LOOKBACK - 1):j + 1], lows15_all[max(0, j - DIV_LOOKBACK - 1):j + 1],
             sigma, float(b15["ret_15"].iloc[j]) if not np.isnan(b15["ret_15"].iloc[j]) else 0.0,
             float(b15["atr_frac"].iloc[j]) if not np.isnan(b15["atr_frac"].iloc[j]) else 0.0, weights)
+        if in_zone:
+            # Side channel for the live adapter (ledger factor block, exit
+            # verdict cache). bars5.attrs is already how the symbol travels.
+            verdicts = bars5.attrs.setdefault("rsi_turn_verdicts", {})
+            verdicts[bars5.index[i]] = {"score": score, "theta": theta, "vetoes": list(vetoes),
+                                         "cvd_60": ts._finite(row.get("mf_cvd_60")) or 0.0, **detail}
         if not in_zone or vetoes or score < theta:
             continue
         atr = ts._finite(row.get("d_atr14"))

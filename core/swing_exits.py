@@ -9,7 +9,7 @@ import functools
 import logging
 import time
 from datetime import date, datetime, timedelta
-from typing import Tuple
+from typing import Any, Tuple
 
 import pandas as pd
 
@@ -131,4 +131,27 @@ def should_earnings_eve_flatten(symbol: str, now: datetime, earnings: set) -> Tu
     ).time()
     if next_weekday(now.date()) in earnings and now.time() >= cutoff:
         return True, "earnings_eve_flatten"
+    return False, ""
+
+
+def should_thesis_fail(reasoning: dict, symbol: str, entry_time: datetime, now: datetime,
+                       verdict: Any = None, max_age_s: float = 900.0) -> Tuple[bool, str]:
+    """v-turn-engine-2026-10-05 (spec §3.6): an `rsi_turn` position whose
+    turn thesis did not materialise is closed early — within the first 2
+    sessions, latest score < θ − 20 and CVD_60 < 0. `verdict` is the latest
+    `core.turn_verdicts.TurnVerdict` for the symbol (None → no opinion); a
+    verdict older than `max_age_s` is ignored (the symbol may have left the
+    zone, which is not a failure)."""
+    if not reasoning or reasoning.get("fit_family") != "rsi_turn" or verdict is None:
+        return False, ""
+    try:
+        from strategies.families.turn_score import thesis_failed
+        if verdict.age_s(now) > max_age_s:
+            return False, ""
+        theta = float((reasoning.get("fit_params") or {}).get("theta", verdict.theta))
+        held = sessions_held(entry_time, now)
+        if thesis_failed(verdict.score, theta, verdict.cvd_60, held):
+            return True, f"thesis_failed score={verdict.score:.0f} theta={theta:.0f} cvd60={verdict.cvd_60:.0f} sessions={held}"
+    except Exception:
+        return False, ""
     return False, ""

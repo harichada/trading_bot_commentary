@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from strategies.families.rsi_turn import bars_15m, rsi_turn_entries, score_bar
-from core import turn_score as ts
+from strategies.families import turn_score as ts
 
 
 def _daily(n=300, crash_days=12):

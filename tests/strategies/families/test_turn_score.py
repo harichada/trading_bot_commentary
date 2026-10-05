@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from core import turn_score as ts
+from strategies.families import turn_score as ts
 
 
 # ── Z ──────────────────────────────────────────────────────────────────

@@ -1,5 +1,8 @@
 """v-turn-score-2026-10-05: the Adaptive RSI Turn score — pure functions.
 
+Lives under strategies/families (not core) because families must not import
+core; core modules import it from here.
+
 Spec: docs/superpowers/specs/2026-10-05-adaptive-rsi-turn-design.md §3.
 
 Four explainable components, each in [0, 1], combined by convex weights into a
