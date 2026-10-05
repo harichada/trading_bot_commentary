@@ -7,12 +7,14 @@ from strategies.families.inplay import FAMILIES_INPLAY
 from strategies.families.intraday_momentum import FAMILIES_INTRADAY_MOMENTUM
 from strategies.families.intraday_reversion import FAMILIES_INTRADAY_REVERSION
 from strategies.families.news import FAMILIES_NEWS
+from strategies.families.rsi_extremes import FAMILIES_RSI
 from strategies.families.swing import FAMILIES_SWING
 from strategies.families.swing2 import FAMILIES_SWING2
 
 FAMILIES: dict[str, Family] = {
     f.name: f for f in (*FAMILIES_INTRADAY_MOMENTUM, *FAMILIES_INTRADAY_REVERSION, *FAMILIES_NEWS,
-                        *FAMILIES_SWING, *FAMILIES_INPLAY, *FAMILIES_SWING2, *FAMILIES_FACTOR)
+                        *FAMILIES_SWING, *FAMILIES_INPLAY, *FAMILIES_SWING2, *FAMILIES_FACTOR,
+                        *FAMILIES_RSI)
 }
 
 
