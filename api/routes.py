@@ -97,6 +97,8 @@ app.add_middleware(APIAuthMiddleware)
 # switch, pending queue, audit trail). Implementation in api/console.py.
 from api.console import router as console_router
 app.include_router(console_router)
+from api.algorithms import router as algorithms_router  # noqa: E402  v-algorithms-page-2026-10-06
+app.include_router(algorithms_router)
 
 # Register backtest endpoints (POST /api/backtest/run, WS /ws/backtest/{run_id},
 # GET /api/backtest/latest). Implementation in api/backtest.py.

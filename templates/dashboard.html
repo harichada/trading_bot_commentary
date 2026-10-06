@@ -3648,6 +3648,21 @@
         </div>
     </div>
 
+    <!-- Algorithms Tab (v-algorithms-page-2026-10-06) -->
+    <div class="tab-content" id="tab-algorithms" style="flex-direction: column;">
+        <div class="settings-panel" style="padding: 20px; max-width: 1200px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 1rem; flex-wrap: wrap;">
+                <h2 style="margin: 0;">🧠 Algorithms</h2>
+                <div id="algo-summary" style="font-size: 0.85rem; color: var(--muted-fg);">Loading…</div>
+            </div>
+            <p style="color: var(--muted-fg); font-size: 0.85rem; margin: 0 0 1rem 0;">
+                Every registered strategy, live or shadow, with what it decided and why. Counts are today's
+                evaluations in this process; the decision list is the most recent first. Refreshes every 30 s while open.
+            </p>
+            <div id="algo-cards" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1rem;"></div>
+        </div>
+    </div>
+
     <!-- Settings Tab (v-hands-off-denylist-settings-2026-09-14) -->
     <div class="tab-content" id="tab-settings" style="flex-direction: column;">
         <div class="settings-panel" style="padding: 20px; max-width: 800px;">
@@ -3817,10 +3832,74 @@
                 loadSentimentTab();
             } else if (tabName === 'backtest') {
                 loadBacktestLatest();
+            } else if (tabName === 'algorithms') {
+                loadAlgorithms();
             } else if (tabName === 'settings') {
                 loadHandsOffDenylist();
                 loadRiskConsole();
             }
+        }
+
+        // ============== ALGORITHMS PAGE (v-algorithms-page-2026-10-06) ==============
+        let _algoTimer = null;
+        function algoEsc(s) {
+            return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        function algoBadge(status) {
+            const color = status === 'live' ? 'oklch(0.72 0.19 150)' : status === 'shadow' ? 'oklch(0.78 0.16 80)' : 'var(--muted-fg)';
+            return `<span style="display:inline-block; padding:0.1rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600; letter-spacing:0.04em; color:#000; background:${color};">${algoEsc(status).toUpperCase()}</span>`;
+        }
+        function algoActionColor(action) {
+            if (action.startsWith('signal')) return 'oklch(0.72 0.19 150)';
+            if (action === 'error' || action === 'veto') return 'oklch(0.7 0.2 25)';
+            if (action === 'shadow') return 'oklch(0.78 0.16 80)';
+            return 'var(--muted-fg)';
+        }
+        function renderAlgorithms(data) {
+            const summary = document.getElementById('algo-summary');
+            const cards = document.getElementById('algo-cards');
+            if (!data || !data.ok) {
+                summary.textContent = 'Could not load: ' + (data && data.error ? data.error : 'no response');
+                return;
+            }
+            summary.textContent = `mode ${data.mode || '?'} · ${data.n_live} live · ${data.n_shadow} shadow` + (data.block_new_entries ? ' · NEW ENTRIES BLOCKED' : '');
+            cards.innerHTML = (data.algorithms || []).map(a => {
+                const by = a.by_action || {};
+                const counts = Object.keys(by).sort().map(k => `<span style="margin-right:0.6rem;"><b style="color:${algoActionColor(k)}">${algoEsc(k)}</b> ${by[k]}</span>`).join('') || '<span style="color:var(--muted-fg)">no evaluations today</span>';
+                const reasons = (a.top_reasons || []).map(r => `<span style="display:inline-block; margin:0.15rem 0.4rem 0 0; padding:0.05rem 0.45rem; border:1px solid var(--border); border-radius:999px; font-size:0.72rem;">${algoEsc(r.action)}·${algoEsc(r.reason)} <b>${r.n}</b></span>`).join('');
+                const rows = (a.recent || []).map(d => `<tr>
+                    <td style="white-space:nowrap; color:var(--muted-fg);">${algoEsc((d.ts || '').slice(11, 19))}</td>
+                    <td style="font-family:var(--font-mono);">${algoEsc(d.symbol)}</td>
+                    <td style="color:${algoActionColor(d.action || '')}; font-weight:600;">${algoEsc(d.action)}</td>
+                    <td>${algoEsc(d.reason)}</td>
+                    <td style="text-align:right; color:var(--muted-fg);">${d.close != null ? Number(d.close).toFixed(2) : ''}</td>
+                </tr>`).join('');
+                return `<div class="card" style="padding: 0.9rem 1rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                        <div><b style="font-family:var(--font-mono);">${algoEsc(a.name)}</b>
+                            <span style="color:var(--muted-fg); font-size:0.75rem; margin-left:0.4rem;">${algoEsc(a.kind)} · ${algoEsc(a.flag)}</span></div>
+                        ${algoBadge(a.status)}
+                    </div>
+                    <div style="margin-top:0.5rem; font-size:0.82rem;">today: ${counts}</div>
+                    <div style="margin-top:0.25rem;">${reasons}</div>
+                    <div style="margin-top:0.6rem; max-height: 220px; overflow:auto;">
+                        <table style="width:100%; font-size:0.78rem; border-collapse:collapse;"><tbody>${rows || '<tr><td style="color:var(--muted-fg)">no decisions recorded</td></tr>'}</tbody></table>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+        async function loadAlgorithms() {
+            try {
+                const resp = await authFetch('/api/algorithms?limit=15');
+                renderAlgorithms(await resp.json());
+            } catch (e) {
+                renderAlgorithms({ ok: false, error: String(e) });
+            }
+            if (_algoTimer) clearInterval(_algoTimer);
+            _algoTimer = setInterval(() => {
+                if (currentTab !== 'algorithms') { clearInterval(_algoTimer); _algoTimer = null; return; }
+                authFetch('/api/algorithms?limit=15').then(r => r.json()).then(renderAlgorithms).catch(() => {});
+            }, 30000);
         }
 
         // ============== HANDS-OFF DENYLIST MANAGEMENT ==============
@@ -5911,6 +5990,7 @@
             if (window.UI_ACTIVITY_PAGE) {
                 tabs.push({ id: 'activity', label: 'Activity', icon: 'list', href: '/activity' });
             }
+            tabs.push({ id: 'algorithms', label: 'Algorithms', icon: 'cpu' });
             tabs.push({ id: 'settings', label: 'Settings', icon: 'settings' });
             return tabs;
         }

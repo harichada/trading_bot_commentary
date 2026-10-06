@@ -36,3 +36,11 @@ def test_settings_tab_has_promotion_banner_and_null_display():
     assert 'id="rc-banner"' in html
     assert "promotion_enabled" in html
     assert "return '—'" in html
+
+
+def test_dashboard_has_algorithms_tab():
+    html = Path("templates/dashboard.html").read_text()
+    for needle in ('id="tab-algorithms"', 'id="algo-cards"', "function loadAlgorithms", "function renderAlgorithms",
+                   "/api/algorithms", "id: 'algorithms'"):
+        assert needle in html, needle
+    assert "loadAlgorithms()" in html[html.index("tabName === 'algorithms'"):][:200]

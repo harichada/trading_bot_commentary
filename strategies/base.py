@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
 from core.models import TradingSignal
+from strategies.decision_book import DecisionBook
 
 
 _logger = logging.getLogger("TradingBot")
@@ -68,6 +69,10 @@ class TradingStrategyWithCommentary(ABC):
             "strategy_decision strategy=%s symbol=%s action=%s reason=%s close=%s %s",
             self.name, symbol, action, reason, close, kv,
         )
+        try:   # v-algorithms-page-2026-10-06: same facts, in memory, for the Algorithms tab
+            DecisionBook.instance().record(self.name, symbol, action, reason, close, **details)
+        except Exception:
+            pass
         
         # v-feature-snapshot-2026-09-09: emit DecisionSnapshot for ML training
         # v-fix-double-emit-2026-09-10: skip snapshot for informational logs
