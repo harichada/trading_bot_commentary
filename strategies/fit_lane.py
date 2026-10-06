@@ -62,8 +62,9 @@ import pandas as pd
 from core.config import Config
 from core.models import MarketData, TradingSignal
 from core.strategy_fit_bars import load_context_slice
-from strategies.fit_lane_ledger import append_ledger
-from strategies.fit_lane_turn import _default_micro_provider, attach_micro, record_turn_verdict, verdict_from_attrs
+from strategies.fit_lane_ledger import append_ledger, append_thesis_only
+from strategies.fit_lane_turn import (_default_micro_provider, attach_micro, record_turn_verdict, shadow_norow_sides,
+                                      verdict_from_attrs)
 from strategies.base import TradingStrategyWithCommentary
 from strategies.families.common import Family, median_params
 from strategies.families.indicators import closed_bars, indicator_frame
@@ -131,6 +132,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         context_source: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
         regime_source: Optional[Callable[[str], str]] = None,
         micro_provider: Optional[Callable[[str], Any]] = None,
+        shadow_norow: Optional[Callable[[], tuple]] = None,
     ) -> None:
         super().__init__(commentary)
         # v-strategy-fit-review-2026-09-25: resolved eagerly so a typo'd
@@ -154,6 +156,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             lambda sym: load_context_slice(Config().STRATEGY_HUNT_DATA_ROOT, sym))
         self._regime_source = regime_source or (lambda sym: read_live_regime(sym))
         self._micro_provider = micro_provider or _default_micro_provider
+        self._shadow_norow = shadow_norow or (lambda: Config().FIT_LANE_SHADOW_NOROW_FAMILIES)
 
     def set_news_bus(self, bus) -> None:
         self._news_bus = bus
@@ -168,7 +171,8 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         # *absent* row too (nothing measured, so nothing rejected), so a symbol with no row is
         # only skipped here when the allowlist has nothing to say about this live family —
         # every case while the flag is "".
-        if row_long is None and row_short is None and not self._admissible_sides():
+        if (row_long is None and row_short is None and not self._admissible_sides()
+                and not self._shadow_norow_sides()):
             self._log_decision(market_data, "skip", "fit_no_row", skip_snapshot=True)
             return None
 
@@ -284,9 +288,12 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             record_turn_verdict(symbol, now_ts, thesis)
         rows_by_side = {"long": row_long, "short": row_short}
         allow_sides = self._admissible_sides()
+        shadow_sides = self._shadow_norow_sides()
         kept = [e for e in entries if e.entry_ts == now_ts
-                and (rows_by_side.get(e.side) is not None or e.side in allow_sides)]
+                and (rows_by_side.get(e.side) is not None or e.side in allow_sides or e.side in shadow_sides)]
         if not kept:
+            if thesis is not None:   # an oversold bar that did not clear the threshold is still an occurrence
+                append_thesis_only(ledger_path(family, self._ledger_dir), now_ts, symbol, thesis)
             self._log_decision(market_data, "skip", "no_entry_now", skip_snapshot=True)
             return None
 
@@ -343,6 +350,9 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         return entry_to_signal(live_entry, family, params, str(getattr(live_row, "verdict", "")),
                                getattr(live_row, "score", float("nan")), symbol,
                                admission=admission, regime=regime, symbol_check_label=check)
+
+    def _shadow_norow_sides(self) -> Tuple[str, ...]:
+        return shadow_norow_sides(self._family_name, self._fam.sides, self._shadow_norow, self._live_families)
 
     def _admissible_sides(self) -> Tuple[str, ...]:
         """Sides the allowlist may admit for this family — () while the flag is "" or the family

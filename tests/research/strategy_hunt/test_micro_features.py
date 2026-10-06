@@ -75,3 +75,13 @@ def test_archive_wall_clock_undoes_the_collectors_fixed_offset():
     assert wall.dt.strftime("%H:%M").tolist() == ["09:30", "09:30"]
     d0, d1 = archive_session_window("2024-10-02")
     assert d0.tz_convert("America/New_York").strftime("%H:%M") == "10:30" and (d1 - d0) == pd.Timedelta(hours=6, minutes=30)
+
+
+def test_load_minute_bins_skips_empty_placeholder_days(tmp_path):
+    from research.strategy_hunt.data.micro import load_minute_bins
+    d = tmp_path / "MU"; d.mkdir()
+    pd.DataFrame().to_parquet(d / "2025-01-01.parquet", index=False)
+    minute_bins_from_ticks(_ticks(minutes=5)).to_parquet(d / "2025-02-03.parquet", index=False)
+    out = load_minute_bins(tmp_path, "MU")
+    assert len(out) == 5 and "t_open" in out.columns
+    assert load_minute_bins(tmp_path, "NOPE").empty

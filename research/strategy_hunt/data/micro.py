@@ -161,7 +161,8 @@ def load_minute_bins(root: Path, symbol: str) -> pd.DataFrame:
     d = Path(root) / symbol.upper()
     if not d.exists():
         return pd.DataFrame()
-    frames = [pd.read_parquet(p) for p in sorted(d.glob("*.parquet"))]
+    frames = [f for f in (pd.read_parquet(p) for p in sorted(d.glob("*.parquet")))
+              if not f.empty and "t_open" in f.columns]      # absent-day placeholders are empty
     if not frames:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)

@@ -104,3 +104,39 @@ def test_family_keeps_only_the_current_bars_verdict():
     rsi_turn_entries(bars, _ind(bars), daily, None, {"theta": 30, "stop_atr": 1.5, "time_stop_days": 5})
     v = bars.attrs.get("rsi_turn_verdicts", {})
     assert len(v) == 1 and "has_quotes" in next(iter(v.values()))
+
+
+def test_shadow_norow_family_is_evaluated_and_ledgered(monkeypatch, tmp_path, caplog):
+    """A shadow-only family with no fit row (a brand-new family) must still be
+    evaluated and write to its ledger; it must never produce a live signal."""
+    import asyncio, json
+    import pandas as pd
+    from tests.strategies.test_fit_lane_live_admission import _Commentary, _Fit, _bars, _md, _toy_family
+    from strategies.fit_lane import FitLaneStrategy
+    name = _toy_family(monkeypatch)
+    lane = FitLaneStrategy(_Commentary(), name, _Fit({}, {}), lambda sym: (_bars(), pd.DataFrame()),
+                           lambda: (), ledger_dir=tmp_path, clock=lambda: datetime(2025, 9, 24, 13, 32),
+                           allowlist=lambda: "", regime_source=lambda sym: "mixed",
+                           shadow_norow=lambda: (name,))
+    with caplog.at_level("INFO", logger="TradingBot"):
+        assert asyncio.run(lane.generate_signal_with_commentary(_md())) is None
+    assert "fit_no_row" not in caplog.text
+    rows = [json.loads(l) for l in (tmp_path / f"shadow_fit_{name}.ndjson").read_text().splitlines()]
+    assert rows and rows[0]["symbol"] == "NVDA"
+    # the same lane without the shadow allowance keeps today's skip
+    lane2 = FitLaneStrategy(_Commentary(), name, _Fit({}, {}), lambda sym: (_bars(), pd.DataFrame()),
+                            lambda: (), ledger_dir=tmp_path / "b", clock=lambda: datetime(2025, 9, 24, 13, 32),
+                            allowlist=lambda: "", regime_source=lambda sym: "mixed", shadow_norow=lambda: ())
+    caplog.clear()
+    with caplog.at_level("INFO", logger="TradingBot"):
+        asyncio.run(lane2.generate_signal_with_commentary(_md()))
+    assert "fit_no_row" in caplog.text
+
+
+def test_config_shadow_norow_default_and_env(monkeypatch):
+    from core.config import Config, config_manager
+    monkeypatch.delenv("FIT_LANE_SHADOW_NOROW_FAMILIES", raising=False)
+    monkeypatch.delitem(config_manager.config.setdefault("trading", {}), "fit_lane_shadow_norow_families", raising=False)
+    assert Config().FIT_LANE_SHADOW_NOROW_FAMILIES == ("rsi_turn",)
+    monkeypatch.setenv("FIT_LANE_SHADOW_NOROW_FAMILIES", "rsi_turn, rsi_dip")
+    assert Config().FIT_LANE_SHADOW_NOROW_FAMILIES == ("rsi_turn", "rsi_dip")

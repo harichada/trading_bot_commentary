@@ -39,3 +39,15 @@ def append_ledger(path: Path, family_name: str, now_ts, symbol: str, kept: list,
                 }) + "\n")
     except Exception as exc:
         logger.warning("fit_lane: ledger write failed for %s/%s: %s", family_name, symbol, exc)
+
+
+def append_thesis_only(path: Path, now_ts, symbol: str, thesis: dict) -> None:
+    """One line for a scored oversold bar that produced no entry (spec §3.8:
+    every occurrence is logged with its factor breakdown)."""
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write(json.dumps({"ts": now_ts.isoformat(), "symbol": symbol, "event": "zone_no_entry",
+                                 "thesis": thesis}) + "\n")
+    except Exception as exc:
+        logger.warning("fit_lane: thesis ledger write failed for %s: %s", symbol, exc)

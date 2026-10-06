@@ -84,3 +84,15 @@ def record_turn_verdict(symbol: str, now_ts, thesis: dict) -> None:
             vetoes=tuple(thesis.get("vetoes") or ()), detail=thesis))
     except Exception as exc:
         logger.debug("fit_lane: turn verdict not recorded for %s: %s", symbol, exc)
+
+
+def shadow_norow_sides(family: str, sides, shadow_norow, live_families) -> tuple:
+    """Sides a shadow-only family may ledger when the fit snapshot has no row
+    for the symbol (a brand-new family collecting its first occurrences).
+    Always () for a live family, so no live entry can come from here."""
+    try:
+        if family in shadow_norow() and family not in live_families():
+            return tuple(sides)
+    except Exception:
+        pass
+    return ()

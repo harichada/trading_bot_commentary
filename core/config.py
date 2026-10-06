@@ -4513,6 +4513,22 @@ class Config:
         return int(self.manager.get('trading.desk_scan_max_symbols', 60))
 
     @property
+    def FIT_LANE_SHADOW_NOROW_FAMILIES(self) -> tuple:
+        """v-turn-engine-2026-10-06: shadow-only families evaluated (and ledgered)
+        even when the fit snapshot has no row for the symbol — the way a brand-new
+        family collects its first occurrences. Never admits a live entry: the
+        live path still needs a row or an allowlist side. Default ("rsi_turn",).
+        Env FIT_LANE_SHADOW_NOROW_FAMILIES (comma list) or yaml
+        trading.fit_lane_shadow_norow_families."""
+        env_val = os.getenv("FIT_LANE_SHADOW_NOROW_FAMILIES")
+        if env_val is not None:
+            return tuple(v.strip() for v in env_val.split(",") if v.strip())
+        raw = self.manager.get('trading.fit_lane_shadow_norow_families', ["rsi_turn"])
+        if isinstance(raw, str):
+            raw = raw.split(",")
+        return tuple(str(v).strip() for v in raw if str(v).strip())
+
+    @property
     def MICRO_DATA_DIR(self) -> str:
         """v-micro-book-2026-10-05: where the per-session minute bins of the
         microstructure book are flushed (one parquet per symbol per day).
