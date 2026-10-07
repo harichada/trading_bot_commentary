@@ -57,6 +57,7 @@ from core.desk.models import DailyPlan, InPlayRow, PlanInputs
 from core.desk.playbook import load_playbook, playbook_path
 from core.desk.store import load_plan, save_plan
 from core.loops import desk_steps as steps
+from core.loops.desk_trade_stats import cooling_off
 from core.market_context import read_market_context
 from core.strategy_fit_bars import load_history, merge_history
 
@@ -192,7 +193,7 @@ class DeskLoop:
         breadth = steps.breadth_score((getattr(self.engine, "market_state", None) or {})
                                       .get("breadth"))
         flags = await asyncio.to_thread(load_calendar_flags, cfg.DESK_CALENDAR_PATH, date)
-        streak, prev_r, trades_read = await self._recent_r(now, date)
+        streak, prev_r, trades_read, streak_since, prior_sat_out = await self._recent_r(now, date)
 
         inputs = PlanInputs(
             date=date,
@@ -210,6 +211,7 @@ class DeskLoop:
             max_daily_loss_pct=steps.daily_loss_pct(getattr(cfg, "MAX_DAILY_LOSS", 0.0)),
             allows_long=allows_long,
             allows_short=allows_short,
+            prior_session_sat_out=prior_sat_out,
         )
         plan = build_daily_plan(inputs, now)
         path = await asyncio.to_thread(save_plan, plan, cfg.DESK_DATA_DIR)
@@ -225,7 +227,8 @@ class DeskLoop:
                     # v-playbook-desk-b2-final-2026-09-25 (M2): how many trade rows the
                     # streak inputs were computed from. A 0 streak on 40 rows is a
                     # finding; a 0 streak on 0 rows is a read that came back empty.
-                    trades_read=trades_read, path=path)
+                    trades_read=trades_read, streak_since=streak_since,
+                    prior_sat_out=prior_sat_out, path=path)
 
     def _context(self) -> ContextReading:
         """The market-context reading the plan rules need, or the unknown one.
@@ -258,20 +261,42 @@ class DeskLoop:
             logger.debug("desk_loop fit staleness unreadable: %s", exc)
             return False
 
-    async def _recent_r(self, now: datetime, date: str) -> Tuple[int, float, int]:
-        """`(losing_day_streak, prev_day_pnl_r, trades_read)` over the streak window.
+    async def _recent_r(self, now: datetime, date: str) -> Tuple[int, float, int, str, bool]:
+        """`(losing_day_streak, prev_day_pnl_r, trades_read, streak_since,
+        prior_session_sat_out)` over the streak window.
 
         `trades_read` is the row count the first two were computed from, audited so a
         zero streak on an empty read is distinguishable from a zero streak on a real
-        tape (M2) — `trades_for` fails soft to `[]`.
+        tape (M2) — `trades_for` fails soft to `[]`. The window starts at the latest
+        of: the lookback, the user's `DESK_STREAK_SINCE`, and the day after the last
+        `two_losing_days` sit-out the desk already served (v-cooling-off-2026-10-07).
         """
         start = (now.date() - timedelta(days=STREAK_LOOKBACK_DAYS)).isoformat()
         since = self._streak_since()
         if since and since > start:          # user reset: sessions before `since` never count
             start = since
+        served, prior_sat_out = cooling_off(await self._prior_plans(now, date), date)
+        if served and served >= start:       # the cooling-off day restarts the streak clock
+            start = (datetime.strptime(served, "%Y-%m-%d").date() + timedelta(days=1)).isoformat()
         trades = await trades_for((start, date), getattr(self.engine, "db_logger", None))
         streak, prev_r = steps.daily_r_stats(trades, date)
-        return streak, prev_r, len(trades or [])
+        return streak, prev_r, len(trades or []), start, prior_sat_out
+
+    async def _prior_plans(self, now: datetime, date: str) -> List[DailyPlan]:
+        """The plans of the sessions inside the streak lookback (missing days skipped)."""
+        try:
+            desk_dir = str(self._config_fn().DESK_DATA_DIR)
+        except Exception:
+            return []
+
+        def _load() -> List[DailyPlan]:
+            out: List[DailyPlan] = []
+            for k in range(1, STREAK_LOOKBACK_DAYS + 1):
+                p = load_plan(desk_dir, (now.date() - timedelta(days=k)).isoformat())
+                if p is not None and p.date < date:
+                    out.append(p)
+            return out
+        return await asyncio.to_thread(_load)
 
     @staticmethod
     def _streak_since() -> str:

@@ -15,11 +15,14 @@ Rules (spec: docs/superpowers/specs/2026-09-25-playbook-desk-design.md §7):
   sit out, first match wins
     calendar_high_impact_before_1030 — a `high:` flag scheduled before 10:30
     vix_spike                        — VIX up more than 15%
-    two_losing_days                  — two or more losing days in a row
+    two_losing_days                  — two or more losing days in a row, unless
+                                       the prior session was already that sit-out
+                                       (the cooling-off day has been served; the
+                                       loop also restarts the streak clock there)
     fit_stale_gate_enforcing         — stale fit snapshot while the gate enforces
 
   risk_budget_pct = max_daily_loss_pct × regime multiplier, halved after a
-                    losing day
+                    losing day or when resuming after a sit-out session
   max_trades      = per-regime cap
   long_ok         = market context allows longs and breadth >= 0.40
   short_ok        = market context allows shorts and breadth <= 0.60
@@ -169,7 +172,7 @@ def _sit_out(inputs: PlanInputs) -> Tuple[bool, str, str]:
             f"sit out ({SIT_OUT_VIX}): VIX up {inputs.vix_change_pct:.1f}%, "
             f"above the {VIX_SPIKE_PCT:.0f}% spike line")
 
-    if inputs.losing_day_streak >= LOSING_STREAK_SIT_OUT:
+    if inputs.losing_day_streak >= LOSING_STREAK_SIT_OUT and not inputs.prior_session_sat_out:
         return True, SIT_OUT_STREAK, (
             f"sit out ({SIT_OUT_STREAK}): {inputs.losing_day_streak} losing days in a row")
 
@@ -190,6 +193,10 @@ def _risk_budget(inputs: PlanInputs) -> Tuple[float, List[str]]:
     if math.isfinite(inputs.prev_day_pnl_r) and inputs.prev_day_pnl_r < 0:
         budget /= 2.0
         notes.append(f"prior session closed {inputs.prev_day_pnl_r:.2f}R: "
+                     f"risk budget halved to {budget:.2f}%")
+    elif inputs.prior_session_sat_out:
+        budget /= 2.0
+        notes.append(f"resuming after a {SIT_OUT_STREAK} sit-out session: "
                      f"risk budget halved to {budget:.2f}%")
     return budget, notes
 

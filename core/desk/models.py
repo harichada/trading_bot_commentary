@@ -252,6 +252,10 @@ class PlanInputs:
     max_daily_loss_pct: float = 0.0
     allows_long: bool = True
     allows_short: bool = True
+    # v-cooling-off-2026-10-07: the session before this one was a `two_losing_days`
+    # sit-out — the cooling-off day has been served, so the desk resumes (at half
+    # risk) instead of sitting out again on the same two old losses.
+    prior_session_sat_out: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -269,6 +273,7 @@ class PlanInputs:
             "max_daily_loss_pct": _json_float(self.max_daily_loss_pct),
             "allows_long": self.allows_long,
             "allows_short": self.allows_short,
+            "prior_session_sat_out": self.prior_session_sat_out,
         }
 
     @staticmethod
@@ -290,4 +295,5 @@ class PlanInputs:
             max_daily_loss_pct=_as_float(d.get("max_daily_loss_pct"), 0.0),
             allows_long=_as_bool(d.get("allows_long"), True),
             allows_short=_as_bool(d.get("allows_short"), True),
+            prior_session_sat_out=_as_bool(d.get("prior_session_sat_out")),
         )

@@ -87,6 +87,27 @@ def _r_by_date(trades: Any) -> Dict[str, List[float]]:
     return out
 
 
+def cooling_off(plans: Any, today: str, streak_reason: str = "two_losing_days") -> Tuple[str, bool]:
+    """v-cooling-off-2026-10-07: `(served_date, prior_session_sat_out)` from
+    prior sessions' plans. `served_date` is the latest session before `today`
+    the desk sat out for the losing streak — trades on or before it no longer
+    count toward a new streak (one cooling-off day per streak, not one per
+    day forever: with no trades on a sat-out day the streak could never clear
+    on its own, which sidelined the desk 2026-10-02 → 10-07).
+    `prior_session_sat_out` is True when the most recent prior plan is that
+    sit-out, so the plan rules resume at half risk. Never raises."""
+    prior: List[DailyPlan] = []
+    for p in plans if isinstance(plans, (list, tuple)) else []:
+        if isinstance(p, DailyPlan) and p.date and p.date < str(today):
+            prior.append(p)
+    if not prior:
+        return "", False
+    prior.sort(key=lambda p: p.date)
+    served = [p.date for p in prior if p.sit_out and p.sit_out_reason == streak_reason]
+    latest = prior[-1]
+    return (served[-1] if served else ""), bool(latest.sit_out and latest.sit_out_reason == streak_reason)
+
+
 def daily_r_stats(trades: Any, today: str) -> Tuple[int, float]:
     """`(losing_day_streak, prev_day_pnl_r)` from closed trades before `today`.
 
