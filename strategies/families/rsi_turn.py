@@ -92,6 +92,40 @@ def score_bar(ind_row: Mapping[str, Any], zone: ts.ZoneStats, rsi15: np.ndarray,
     return True, score, detail, vetoes
 
 
+ROW_COLUMNS = ("d_rsi14", "d_atr14", "d_bb_mid", "mf_buy_vol_15", "mf_sell_vol_15", "mf_vol_15", "mf_cvd_15",
+               "mf_cvd_60", "mf_large_buy_15", "mf_large_sell_15", "mf_large_vol_15", "mf_imb_ema", "mf_spread_ema",
+               "mf_spread_baseline", "mf_spread_mad", "mf_bid_size", "mf_ask_size", "mf_median_bbo_size",
+               "mf_aggressor_rule")
+MIN_RSI_HISTORY = 60
+
+
+def _row_columns(ind: pd.DataFrame) -> dict[str, np.ndarray]:
+    """The columns `score_bar` reads, as arrays (absent columns stay absent so
+    `row.get` falls back exactly as it did on a pandas row); `d_rsi14` is
+    always present (NaN when missing) because the zone gate reads it."""
+    cols = {c: ind[c].to_numpy() for c in ROW_COLUMNS if c in ind.columns}
+    if "d_rsi14" not in cols:
+        cols["d_rsi14"] = np.full(len(ind), np.nan)
+    else:
+        cols["d_rsi14"] = pd.to_numeric(ind["d_rsi14"], errors="coerce").to_numpy(dtype=float)
+    return cols
+
+
+def _zone_by_day(daily_rsi: pd.Series, bars_index: pd.DatetimeIndex) -> dict:
+    """Zone stats per session: the trailing-252 percentiles of the daily RSI
+    values BEFORE that day (so today's own RSI never gates today). Days with
+    fewer than MIN_RSI_HISTORY prior values are left out (no zone)."""
+    s = daily_rsi.sort_index()
+    didx, vals = s.index, s.to_numpy(dtype=float)
+    zones = {}
+    for day in pd.DatetimeIndex(bars_index.normalize().unique()):
+        n = int(didx.searchsorted(day, side="left"))
+        if n < MIN_RSI_HISTORY:
+            continue
+        zones[day] = ts.zone_stats(vals[:n], 252)
+    return zones
+
+
 def rsi_turn_entries(bars5, ind, daily, news, params) -> list[Entry]:
     theta = float(params.get("theta", 60))
     stop_atr = float(params.get("stop_atr", 1.5))
@@ -105,24 +139,33 @@ def rsi_turn_entries(bars5, ind, daily, news, params) -> list[Entry]:
         return []
     rsi15_all = b15["rsi"].to_numpy()
     lows15_all = b15["low"].to_numpy()
+    ret15_all = b15["ret_15"].to_numpy()
+    atrf_all = b15["atr_frac"].to_numpy()
     b15_pos = b15.index.get_indexer(bars5.index.floor("15min") - pd.Timedelta(0))
     sigma = _slope_sigma(rsi15_all)
     out: list[Entry] = []
     closes5 = bars5["close"].to_numpy()
-    for i in range(len(bars5)):
+    # v-turn-perf-2026-10-07: the live lane hands this family ~100k bars (the
+    # research history spliced under the provider window), so the per-bar work
+    # must be O(in-zone bars), not O(bars). Zone stats are per session (one
+    # percentile pass per day, not per bar), the zone gate is vectorised, and
+    # `ind` is read as column arrays — `ind.iloc[i]` per bar cost ~60 s per
+    # symbol and stalled the whole process (GIL) while it ran.
+    cols = _row_columns(ind)
+    d_rsi = cols["d_rsi14"]
+    zones = _zone_by_day(daily_rsi, bars5.index)
+    q05 = np.array([zones[d].q05 if d in zones else np.nan for d in bars5.index.normalize()], dtype=float)
+    candidates = np.flatnonzero((b15_pos >= 0) & np.isfinite(d_rsi) & np.isfinite(q05) & (d_rsi <= q05))
+    for i in candidates:
         j = b15_pos[i]
-        if j < 0 or i + 1 >= len(bars5):
+        if i + 1 >= len(bars5):
             continue
-        row = ind.iloc[i]
-        day = bars5.index[i].normalize()
-        hist = daily_rsi[daily_rsi.index < day]
-        if len(hist) < 60:
-            continue
-        zone = ts.zone_stats(hist.to_numpy(), 252)
+        row = {k: v[i] for k, v in cols.items()}
+        zone = zones[bars5.index[i].normalize()]
         in_zone, score, detail, vetoes = score_bar(
             row, zone, rsi15_all[max(0, j - DIV_LOOKBACK - 1):j + 1], lows15_all[max(0, j - DIV_LOOKBACK - 1):j + 1],
-            sigma, float(b15["ret_15"].iloc[j]) if not np.isnan(b15["ret_15"].iloc[j]) else 0.0,
-            float(b15["atr_frac"].iloc[j]) if not np.isnan(b15["atr_frac"].iloc[j]) else 0.0, weights)
+            sigma, float(ret15_all[j]) if not np.isnan(ret15_all[j]) else 0.0,
+            float(atrf_all[j]) if not np.isnan(atrf_all[j]) else 0.0, weights)
         if in_zone:
             # Side channel for the live adapter (ledger factor block, exit
             # verdict cache). bars5.attrs is already how the symbol travels.

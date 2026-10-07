@@ -2796,7 +2796,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                         direction=_direction_read.direction,
                         phase=_direction_read.phase,
                         ema_stack=_direction_read.ema_stack,
-                        reason=_direction_read.reason,
+                        note=_direction_read.reason,
                     )
                     return None
 
@@ -2806,7 +2806,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                         direction=_direction_read.direction,
                         phase=_direction_read.phase,
                         rsi=round(rsi, 2),
-                        reason="oversold_bounce_risk",
+                        note="oversold_bounce_risk",
                     )
                     return None
 
@@ -2884,7 +2884,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                     market_data, "skip", "rsi_oversold_no_short",
                     rsi=round(rsi, 2),
                     rsi_floor=_rsi_floor,
-                    reason="oversold_bounce_risk",
+                    note="oversold_bounce_risk",
                 )
                 return None
 
@@ -2893,7 +2893,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                     market_data, "skip", "rsi_extreme_overbought_no_short",
                     rsi=round(rsi, 2),
                     rsi_ceiling=_rsi_ceiling,
-                    reason="extreme_strength_not_reversal",
+                    note="extreme_strength_not_reversal",
                 )
                 return None
 
