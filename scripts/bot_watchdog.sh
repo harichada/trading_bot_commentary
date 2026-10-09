@@ -286,7 +286,10 @@ restart_bot() {
         log "dry-run: would launch, then POST /api/start, then POST /api/toggle-mode {\"mode\":\"live\"}"
         return 0
     fi
-    nohup "$PYTHON_BIN" "$BOT_SCRIPT" >> nohup.out 2>&1 &
+    # 9>&- : do NOT hand the bot our flock fd. A bot that inherits fd 9 holds the
+    # watchdog lock for its whole life, and every later tick exits silently at
+    # flock -n (seen 2026-10-08: no health checks from 11:10 until noticed).
+    nohup "$PYTHON_BIN" "$BOT_SCRIPT" >> nohup.out 2>&1 9>&- &
     disown || true
 
     local waited=0 code="000"
