@@ -18,7 +18,7 @@ def test_registry_has_twenty_four_unique_families_with_bounded_grids():
                              # Adaptive RSI Turn engine (2026-10-05)
                              "rsi_turn",
                              # prior-high / prior-low fade with RSI filter (2026-10-08, MU style)
-                             "prior_high_rsi"}
+                             "rsi_peak_fade"}
     assert len(FAMILIES) == 24
     for name, fam in FAMILIES.items():
         assert fam.name == name and callable(fam.fn) and 1 <= len(grid_combos(fam.grid)) <= 27
