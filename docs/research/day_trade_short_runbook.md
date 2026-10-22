@@ -104,7 +104,7 @@ python -m research.day_trade_short_resolver \
     "profit_factor": 1.45,
     "expectancy_r": 0.08,
     "by_pattern": { "breakdown": {...}, "continuation_down": {...} },
-    "promotion_gates": { "n>=150_or_sessions>=10": true, ... },
+    "promotion_gates": { "n>=150_and_sessions>=10": true, ... },
     "all_gates_pass": true
   },
   "all_regime": { ... },

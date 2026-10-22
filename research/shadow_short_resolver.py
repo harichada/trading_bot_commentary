@@ -72,13 +72,16 @@ FLATTEN_TIME_ET = time(15, 55)  # 15:55 ET — flatten before close
 DEFAULT_SLIPPAGE_PCT = 0.001    # 0.1% conservative slip model
 
 # Stage A promotion floors — RESEARCH-LOCKED, do NOT loosen
-STAGE_A_MIN_TRADES = 150
-STAGE_A_MIN_SESSIONS = 10
-STAGE_A_MIN_PF = 1.30
-STAGE_A_MIN_WR = 0.48
-STAGE_A_MIN_EXPECTANCY_R = 0.05
-STAGE_A_MAX_DD_PCT = 0.06
-STAGE_A_MAX_LOSING_DAY_R = 2.0
+# v-learning-loop-2026-10-22: sourced from the single shared copy.
+from core.learning import stage_a as _stage_a  # noqa: E402
+
+STAGE_A_MIN_TRADES = _stage_a.MIN_TRADES
+STAGE_A_MIN_SESSIONS = _stage_a.MIN_SESSIONS
+STAGE_A_MIN_PF = _stage_a.MIN_PF
+STAGE_A_MIN_WR = _stage_a.MIN_WR
+STAGE_A_MIN_EXPECTANCY_R = _stage_a.MIN_EXPECTANCY_R
+STAGE_A_MAX_DD_PCT = _stage_a.MAX_DD_PCT
+STAGE_A_MAX_LOSING_DAY_R = _stage_a.MAX_LOSING_DAY_R
 STAGE_A_MAX_SIMULTANEOUS = 3
 
 DEFAULT_DSN = "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
@@ -564,8 +567,9 @@ def compute_metrics(
         by_exit[t.exit_reason] += 1
 
     # Promotion gates
-    # n>=150 OR >=10 sessions (either is acceptable)
-    n_gate = n_trades >= STAGE_A_MIN_TRADES or n_sessions >= STAGE_A_MIN_SESSIONS
+    # v-learning-loop-2026-10-22: Stage A requires BOTH n>=150 AND >=10
+    # sessions (was OR, which let a thin sample pass the sample floor).
+    n_gate = _stage_a.sample_gate(n_trades, n_sessions)
     pf_gate = profit_factor >= STAGE_A_MIN_PF
     wr_gate = win_rate >= STAGE_A_MIN_WR
     exp_gate = expectancy_r >= STAGE_A_MIN_EXPECTANCY_R
@@ -574,7 +578,7 @@ def compute_metrics(
     simultaneous_gate = max_simultaneous <= STAGE_A_MAX_SIMULTANEOUS
 
     gates = {
-        f"n>={STAGE_A_MIN_TRADES}_or_sessions>={STAGE_A_MIN_SESSIONS}": n_gate,
+        f"n>={STAGE_A_MIN_TRADES}_and_sessions>={STAGE_A_MIN_SESSIONS}": n_gate,
         f"pf>={STAGE_A_MIN_PF}": pf_gate,
         f"wr>={STAGE_A_MIN_WR}": wr_gate,
         f"exp>={STAGE_A_MIN_EXPECTANCY_R}R": exp_gate,

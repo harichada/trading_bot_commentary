@@ -61,6 +61,7 @@ from core.strategy_fit_gate import evaluate_fit_gate, family_for
 # signal router are guarded by Config().ENABLE_DESK (default False).
 from core.desk.daily_plan import evaluate_desk_gate
 from core.desk.playbook import evaluate_playbook_gate, load_playbook, playbook_path
+from core.learning.risk_caps import daily_halt, realized_bot_pnl_today
 from core.desk.store import load_plan as load_desk_plan
 from core.loops.desk_steps import now_et as desk_now_et, session_date_str as desk_session_date
 from core.swing_exits import (
@@ -6437,6 +6438,22 @@ class TradingEngineWithCommentary:
         if bool(getattr(Config(), "BLOCK_NEW_ENTRIES", False)):
             self._audit("signal_router", signal.symbol, "skip", "entries_blocked_by_console")
             return
+
+        # v-learning-loop-2026-10-22: daily REALIZED loss halt for NEW entries
+        # only (this router never carries exits; flatten/OCO/circuits are
+        # untouched). Default OFF. Hands-off denylist symbols never count.
+        if getattr(Config(), "ENABLE_DAILY_REALIZED_LOSS_HALT", False) is True:
+            try:
+                _rl = realized_bot_pnl_today(getattr(self, "trade_history", []) or [],
+                                             datetime.now().date(), Config().HANDS_OFF_DENYLIST)
+                _halt, _why = daily_halt(_rl, Config().DAILY_REALIZED_LOSS_HALT_USD)
+            except Exception as _rl_exc:
+                logger.warning("learning_daily_halt check failed (fail-open): %s", _rl_exc)
+                _halt, _why = False, "error"
+            if _halt:
+                self._audit("signal_router", signal.symbol, "skip", "daily_realized_loss_halt",
+                            detail=_why)
+                return
 
         # Shadow meta-model evaluation — logs only, no decision impact.
         # Dispatched via asyncio.to_thread so the sync sklearn/xgb call

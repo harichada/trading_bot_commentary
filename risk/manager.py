@@ -39,6 +39,8 @@ class Config:
 # opinion". With ENABLE_PLAYBOOK_GATE on, the engine's playbook hook overwrites
 # it with the playbook's multiplier for that (family, side, regime) — the
 # playbook is the authority on lane size, by design.
+from core.learning.risk_caps import clamp_shares_to_risk, validate_stop as learning_validate_stop
+
 PLAYBOOK_SIZE_MULT_MIN = 0.0
 PLAYBOOK_SIZE_MULT_MAX = 1.5
 
@@ -200,6 +202,21 @@ class RiskManagerWithCommentary:
             message="Let me determine the appropriate position size based on risk management rules...",
             importance=7
         ))
+
+        # v-learning-loop-2026-10-22: require a valid stop (so R is derivable)
+        # on every NEW entry. Both flags default OFF -> this block is skipped.
+        _cfg_l = Config()
+        if getattr(_cfg_l, 'REQUIRE_STOP_R_SHADOW', False) is True or getattr(_cfg_l, 'REQUIRE_STOP_R_ENFORCE', False) is True:
+            _st = getattr(signal, 'signal_type', None)
+            _side = 'short' if getattr(_st, 'name', '') == 'SELL' else 'long'
+            _ok, _why = learning_validate_stop(_side, current_price, getattr(signal, 'stop_loss', None))
+            if not _ok:
+                _enf = getattr(_cfg_l, 'REQUIRE_STOP_R_ENFORCE', False) is True
+                logger.warning("learning_stop_r_%s symbol=%s side=%s entry=%s stop=%s reason=%s",
+                               "reject" if _enf else "shadow", signal.symbol, _side, current_price,
+                               getattr(signal, 'stop_loss', None), _why)
+                if _enf:
+                    return 0
 
         # Risk per share
         risk_per_share = abs(current_price - signal.stop_loss)
@@ -483,6 +500,21 @@ class RiskManagerWithCommentary:
                 "live_size_multiplier symbol=%s mult=%.2f old=%d new=%d",
                 signal.symbol, live_mult, old_size, position_size,
             )
+
+        # v-learning-loop-2026-10-22: hard per-trade 1R cap (shares x
+        # risk_per_share <= RISK_CAP_PER_TRADE_USD). Default OFF. Only ever
+        # reduces size; 0 shares means no trade (engine reads 0 as skip).
+        if getattr(_cfg_l, 'ENABLE_RISK_CAP_PER_TRADE', False) is True:
+            _cap_usd = float(getattr(_cfg_l, 'RISK_CAP_PER_TRADE_USD', 150.0))
+            _old = position_size
+            position_size = clamp_shares_to_risk(position_size, risk_per_share, _cap_usd)
+            if position_size != _old:
+                logger.info("learning_risk_cap symbol=%s rps=%.4f cap=%.2f old=%d new=%d",
+                            signal.symbol, risk_per_share, _cap_usd, _old, position_size)
+            if position_size == 0:
+                logger.warning("learning_risk_cap_zero symbol=%s rps=%.4f cap=%.2f (1 share exceeds 1R cap)",
+                               signal.symbol, risk_per_share, _cap_usd)
+                return 0
 
         # Audit log — ATR, stop distance, shares, dollar risk, kelly, quality inputs
         atr_val = signal.reasoning.get('atr') if hasattr(signal, 'reasoning') and signal.reasoning else None

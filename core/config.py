@@ -4463,6 +4463,131 @@ class Config:
         return bool(self.manager.get('trading.enable_playbook_gate', False))
 
     @property
+    def ENABLE_LEARNING_SCORECARD(self) -> bool:
+        """v-learning-loop-2026-10-22: nightly rolling per-(family, side, regime) Stage A scorecard written to data/learning/ (report only).
+
+        Default False. Env ENABLE_LEARNING_SCORECARD=1 or yaml trading.enable_learning_scorecard: true.
+        """
+        env_val = os.getenv("ENABLE_LEARNING_SCORECARD")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_learning_scorecard', False))
+
+    @property
+    def LEARNING_AUTODEMOTE_SHADOW(self) -> bool:
+        """v-learning-loop-2026-10-22: evaluate auto-demote triggers nightly and LOG would-demote decisions only (no playbook change).
+
+        Default False. Env LEARNING_AUTODEMOTE_SHADOW=1 or yaml trading.learning_autodemote_shadow: true.
+        """
+        env_val = os.getenv("LEARNING_AUTODEMOTE_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.learning_autodemote_shadow', False))
+
+    @property
+    def LEARNING_AUTODEMOTE_ENFORCE(self) -> bool:
+        """v-learning-loop-2026-10-22: write triggered demotions into playbook.json as status=suspended so the existing playbook gate (ENABLE_PLAYBOOK_GATE) skips them. Never promotes.
+
+        Default False. Env LEARNING_AUTODEMOTE_ENFORCE=1 or yaml trading.learning_autodemote_enforce: true.
+        """
+        env_val = os.getenv("LEARNING_AUTODEMOTE_ENFORCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.learning_autodemote_enforce', False))
+
+    @property
+    def LEARNING_EXIT_SHADOW(self) -> bool:
+        """v-learning-loop-2026-10-22: nightly counterfactual exit replay (no MACD-flip / RSI<50 early exits) on closed live trades; report only.
+
+        Default False. Env LEARNING_EXIT_SHADOW=1 or yaml trading.learning_exit_shadow: true.
+        """
+        env_val = os.getenv("LEARNING_EXIT_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.learning_exit_shadow', False))
+
+    @property
+    def ENABLE_LOSS_ATTRIBUTION_REPORT(self) -> bool:
+        """v-learning-loop-2026-10-22: weekly loss-attribution report (entry/exit/cost/size/cluster) to docs/; report only.
+
+        Default False. Env ENABLE_LOSS_ATTRIBUTION_REPORT=1 or yaml trading.enable_loss_attribution_report: true.
+        """
+        env_val = os.getenv("ENABLE_LOSS_ATTRIBUTION_REPORT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_loss_attribution_report', False))
+
+    @property
+    def REQUIRE_STOP_R_SHADOW(self) -> bool:
+        """v-learning-loop-2026-10-22: audit-log new entries whose stop is missing/invalid (R not derivable); never blocks.
+
+        Default False. Env REQUIRE_STOP_R_SHADOW=1 or yaml trading.require_stop_r_shadow: true.
+        """
+        env_val = os.getenv("REQUIRE_STOP_R_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.require_stop_r_shadow', False))
+
+    @property
+    def REQUIRE_STOP_R_ENFORCE(self) -> bool:
+        """v-learning-loop-2026-10-22: reject (size 0) new entries whose stop is missing/invalid (R not derivable). Exits unaffected.
+
+        Default False. Env REQUIRE_STOP_R_ENFORCE=1 or yaml trading.require_stop_r_enforce: true.
+        """
+        env_val = os.getenv("REQUIRE_STOP_R_ENFORCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.require_stop_r_enforce', False))
+
+    @property
+    def ENABLE_RISK_CAP_PER_TRADE(self) -> bool:
+        """v-learning-loop-2026-10-22: clamp new-entry shares so shares x risk_per_share <= RISK_CAP_PER_TRADE_USD (1R cap).
+
+        Default False. Env ENABLE_RISK_CAP_PER_TRADE=1 or yaml trading.enable_risk_cap_per_trade: true.
+        """
+        env_val = os.getenv("ENABLE_RISK_CAP_PER_TRADE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_risk_cap_per_trade', False))
+
+    @property
+    def ENABLE_DAILY_REALIZED_LOSS_HALT(self) -> bool:
+        """v-learning-loop-2026-10-22: block NEW entries once today's realized bot-managed P&L <= -DAILY_REALIZED_LOSS_HALT_USD. Exits, flatten and circuits unaffected.
+
+        Default False. Env ENABLE_DAILY_REALIZED_LOSS_HALT=1 or yaml trading.enable_daily_realized_loss_halt: true.
+        """
+        env_val = os.getenv("ENABLE_DAILY_REALIZED_LOSS_HALT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_daily_realized_loss_halt', False))
+
+    @property
+    def RISK_CAP_PER_TRADE_USD(self) -> float:
+        """v-learning-loop-2026-10-22: max $ risk (1R) per new entry when ENABLE_RISK_CAP_PER_TRADE is on. Default 150.0.
+        Env RISK_CAP_PER_TRADE_USD or yaml trading.risk_cap_per_trade_usd. Non-positive/invalid -> default."""
+        raw = os.getenv("RISK_CAP_PER_TRADE_USD")
+        if raw is None:
+            raw = self.manager.get('trading.risk_cap_per_trade_usd', 150.0)
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return 150.0
+        return val if val > 0 else 150.0
+
+    @property
+    def DAILY_REALIZED_LOSS_HALT_USD(self) -> float:
+        """v-learning-loop-2026-10-22: realized-loss $ threshold for ENABLE_DAILY_REALIZED_LOSS_HALT. Default 500.0.
+        Env DAILY_REALIZED_LOSS_HALT_USD or yaml trading.daily_realized_loss_halt_usd. Non-positive/invalid -> default."""
+        raw = os.getenv("DAILY_REALIZED_LOSS_HALT_USD")
+        if raw is None:
+            raw = self.manager.get('trading.daily_realized_loss_halt_usd', 500.0)
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return 500.0
+        return val if val > 0 else 500.0
+
+    @property
     def BLOCK_NEW_ENTRIES(self) -> bool:
         """v-risk-console-2026-09-28: operator kill switch for NEW entries only.
         Exits and position management never pass through this router.

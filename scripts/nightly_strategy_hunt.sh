@@ -11,5 +11,8 @@ LOG="data/strategy_hunt/nightly/$(date +%F).log"
 echo "== nightly strategy hunt start $(date -Iseconds)" >> "$LOG"
 /home/nvidia/anaconda3/envs/trading-bot/bin/python -m research.strategy_hunt all --workers 12 --postgres >> "$LOG" 2>&1
 rc=$?
+# v-learning-loop-2026-10-22: flag-gated learning loop (no-op unless a learning flag is on);
+# runs after the playbook is rewritten, never changes the pipeline exit code.
+/home/nvidia/anaconda3/envs/trading-bot/bin/python -m research.learning.nightly >> "$LOG" 2>&1 || true
 echo "== nightly strategy hunt end rc=$rc $(date -Iseconds)" >> "$LOG"
 exit $rc
