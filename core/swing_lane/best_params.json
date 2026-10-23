@@ -1,0 +1,27 @@
+{
+ "A": {
+  "trig": "rsi",
+  "entry": "open",
+  "stop": "swing",
+  "exit": "trail"
+ },
+ "B": {
+  "n": 20,
+  "k": 10,
+  "entry": "open",
+  "stop": "atr",
+  "exit": "trail"
+ },
+ "C": {
+  "gap": 0.05,
+  "entry": "open",
+  "stop": "swing",
+  "exit": "t3"
+ },
+ "D": {
+  "rsi": 10,
+  "entry": "open",
+  "stop": "atr",
+  "exit": "time"
+ }
+}

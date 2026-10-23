@@ -4561,6 +4561,55 @@ class Config:
             return env_val.lower() in ("1", "true", "yes", "on")
         return bool(self.manager.get('trading.enable_daily_realized_loss_halt', False))
 
+    # ── v-swing-lane-2026-10-23: watch-only daily swing lane (core/swing_lane). ──
+    # Every flag defaults False. Nothing in core imports core.swing_lane unless
+    # ENABLE_SWING_SHADOW is True and the caller explicitly invokes
+    # core.swing_lane_gate. ENABLE_SWING_LIVE has NO order path: it only makes
+    # the gate refuse to start (raises SwingLiveNotSupported).
+    def _swing_flag(self, name: str, yaml_key: str, default: bool = False) -> bool:
+        env_val = os.getenv(name)
+        if env_val is not None:
+            return env_val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get(yaml_key, default))
+
+    @property
+    def ENABLE_SWING_SHADOW(self) -> bool:
+        """v-swing-lane: run the EOD swing scanner in shadow (log only, no orders). Default False.
+        Env ENABLE_SWING_SHADOW or yaml trading.enable_swing_shadow."""
+        return self._swing_flag("ENABLE_SWING_SHADOW", "trading.enable_swing_shadow")
+
+    @property
+    def ENABLE_SWING_LIVE(self) -> bool:
+        """v-swing-lane: reserved. There is no swing order path; True makes the gate refuse to start.
+        Default False. Env ENABLE_SWING_LIVE or yaml trading.enable_swing_live."""
+        return self._swing_flag("ENABLE_SWING_LIVE", "trading.enable_swing_live")
+
+    @property
+    def SWING_SETUP_PULLBACK(self) -> bool:
+        """v-swing-lane: setup A (uptrend pullback) — FAILED backtest, research only. Default False."""
+        return self._swing_flag("SWING_SETUP_PULLBACK", "trading.swing_setup_pullback")
+
+    @property
+    def SWING_SETUP_BREAKOUT(self) -> bool:
+        """v-swing-lane: setup B (base breakout) — passed OOS. Default False."""
+        return self._swing_flag("SWING_SETUP_BREAKOUT", "trading.swing_setup_breakout")
+
+    @property
+    def SWING_SETUP_GAPDRIFT(self) -> bool:
+        """v-swing-lane: setup C (gap/PEAD proxy) — marginal, shadow only. Default False."""
+        return self._swing_flag("SWING_SETUP_GAPDRIFT", "trading.swing_setup_gapdrift")
+
+    @property
+    def SWING_SETUP_MEANREV(self) -> bool:
+        """v-swing-lane: setup D (RSI2 mean reversion) — FAILED backtest, research only. Default False."""
+        return self._swing_flag("SWING_SETUP_MEANREV", "trading.swing_setup_meanrev")
+
+    @property
+    def SWING_EARNINGS_BLACKOUT(self) -> bool:
+        """v-swing-lane: earnings blackout (fail closed when calendar missing). Default True
+        (only consulted when the swing lane runs). Env SWING_EARNINGS_BLACKOUT or yaml."""
+        return self._swing_flag("SWING_EARNINGS_BLACKOUT", "trading.swing_earnings_blackout", True)
+
     @property
     def RISK_CAP_PER_TRADE_USD(self) -> float:
         """v-learning-loop-2026-10-22: max $ risk (1R) per new entry when ENABLE_RISK_CAP_PER_TRADE is on. Default 150.0.
