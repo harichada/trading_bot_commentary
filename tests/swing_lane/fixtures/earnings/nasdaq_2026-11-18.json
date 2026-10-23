@@ -1,0 +1,112 @@
+{
+ "data": {
+  "asOf": "Wed, Nov 18, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests",
+   "lastYearRptDt": "Last Year's Report Date",
+   "lastYearEPS": "Last year's EPS*"
+  },
+  "rows": [
+   {
+    "lastYearRptDt": "11/19/2025",
+    "lastYearEPS": "$1.24",
+    "time": "time-not-supplied",
+    "symbol": "NVDA",
+    "name": "NVIDIA Corporation",
+    "marketCap": "$5,114,261,100,000",
+    "fiscalQuarterEnding": "Oct/2026",
+    "epsForecast": "$2.49",
+    "noOfEsts": "13"
+   },
+   {
+    "lastYearRptDt": "11/19/2025",
+    "lastYearEPS": "$3.06",
+    "time": "time-pre-market",
+    "symbol": "LOW",
+    "name": "Lowe's Companies, Inc.",
+    "marketCap": "$114,662,613,000",
+    "fiscalQuarterEnding": "Oct/2026",
+    "epsForecast": "$2.86",
+    "noOfEsts": "11"
+   },
+   {
+    "lastYearRptDt": "11/19/2025",
+    "lastYearEPS": "$1.78",
+    "time": "time-pre-market",
+    "symbol": "TGT",
+    "name": "Target Corporation",
+    "marketCap": "$71,828,857,000",
+    "fiscalQuarterEnding": "Oct/2026",
+    "epsForecast": "$2.08",
+    "noOfEsts": "12"
+   },
+   {
+    "lastYearRptDt": "11/20/2025",
+    "lastYearEPS": "($0.23)",
+    "time": "time-after-hours",
+    "symbol": "UGI",
+    "name": "UGI Corporation",
+    "marketCap": "$8,281,650,700",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "($0.32)",
+    "noOfEsts": "1"
+   },
+   {
+    "lastYearRptDt": "11/19/2025",
+    "lastYearEPS": "$4.20",
+    "time": "time-after-hours",
+    "symbol": "CPA",
+    "name": "Copa Holdings, S.A.",
+    "marketCap": "$5,547,945,500",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$4",
+    "noOfEsts": "6"
+   },
+   {
+    "lastYearRptDt": "11/05/2025",
+    "lastYearEPS": "$0.43",
+    "time": "time-pre-market",
+    "symbol": "GLNG",
+    "name": "Golar LNG Limited",
+    "marketCap": "$4,472,975,400",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "($0.01)",
+    "noOfEsts": "2"
+   },
+   {
+    "lastYearRptDt": "11/17/2025",
+    "lastYearEPS": "($0.01)",
+    "time": "time-after-hours",
+    "symbol": "HP",
+    "name": "Helmerich & Payne, Inc.",
+    "marketCap": "$3,710,733,060",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.26",
+    "noOfEsts": "7"
+   },
+   {
+    "lastYearRptDt": "11/25/2025",
+    "lastYearEPS": "($0.16)",
+    "time": "time-pre-market",
+    "symbol": "PONY",
+    "name": "Pony AI Inc.",
+    "marketCap": "$2,176,378,620",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "",
+    "noOfEsts": "N/A"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

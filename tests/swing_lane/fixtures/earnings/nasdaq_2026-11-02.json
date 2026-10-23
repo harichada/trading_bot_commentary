@@ -1,0 +1,112 @@
+{
+ "data": {
+  "asOf": "Mon, Nov 2, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests",
+   "lastYearRptDt": "Last Year's Report Date",
+   "lastYearEPS": "Last year's EPS*"
+  },
+  "rows": [
+   {
+    "lastYearRptDt": "10/30/2025",
+    "lastYearEPS": "$1.85",
+    "time": "time-after-hours",
+    "symbol": "AAPL",
+    "name": "Apple Inc.",
+    "marketCap": "$5,081,985,400,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$2",
+    "noOfEsts": "8"
+   },
+   {
+    "lastYearRptDt": "11/03/2025",
+    "lastYearEPS": "$0.18",
+    "time": "time-after-hours",
+    "symbol": "PLTR",
+    "name": "Palantir Technologies Inc.",
+    "marketCap": "$471,258,857,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.34",
+    "noOfEsts": "9"
+   },
+   {
+    "lastYearRptDt": "11/03/2025",
+    "lastYearEPS": "$4.22",
+    "time": "time-after-hours",
+    "symbol": "VRTX",
+    "name": "Vertex Pharmaceuticals Incorporated",
+    "marketCap": "$135,644,684,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$4.36",
+    "noOfEsts": "5"
+   },
+   {
+    "lastYearRptDt": "11/04/2025",
+    "lastYearEPS": "$2.47",
+    "time": "time-pre-market",
+    "symbol": "MAR",
+    "name": "Marriott International",
+    "marketCap": "$103,472,062,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$2.86",
+    "noOfEsts": "8"
+   },
+   {
+    "lastYearRptDt": "11/03/2025",
+    "lastYearEPS": "$0.49",
+    "time": "time-after-hours",
+    "symbol": "WMB",
+    "name": "Williams Companies, Inc. (The)",
+    "marketCap": "$86,392,316,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.56",
+    "noOfEsts": "8"
+   },
+   {
+    "lastYearRptDt": "11/03/2025",
+    "lastYearEPS": "$3.08",
+    "time": "time-after-hours",
+    "symbol": "FANG",
+    "name": "Diamondback Energy, Inc.",
+    "marketCap": "$55,204,000,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$4.80",
+    "noOfEsts": "8"
+   },
+   {
+    "lastYearRptDt": "11/03/2025",
+    "lastYearEPS": "$1.08",
+    "time": "time-after-hours",
+    "symbol": "O",
+    "name": "Realty Income Corporation",
+    "marketCap": "$53,991,203,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$1.11",
+    "noOfEsts": "7"
+   },
+   {
+    "lastYearRptDt": "10/29/2025",
+    "lastYearEPS": "$1.53",
+    "time": "time-pre-market",
+    "symbol": "ETR",
+    "name": "Entergy Corporation",
+    "marketCap": "$50,484,863,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$1.71",
+    "noOfEsts": "5"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

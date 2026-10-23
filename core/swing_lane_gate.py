@@ -51,3 +51,20 @@ def maybe_record_fills(cfg, today) -> list:
     except Exception as exc:
         logger.warning("swing_lane: fill record failed (isolated): %s", exc, exc_info=True)
         return []
+
+
+def maybe_refresh_earnings(cfg, today, force: bool = False) -> bool:
+    """Daily earnings-calendar refresh (network; run off the event loop). No-op when the
+    lane is off or SWING_EARNINGS_PROVIDER is 'none'. Never raises (except LIVE refusal)."""
+    if not check_startup(cfg):
+        return False
+    try:
+        from core.swing_lane.config import LaneSettings, load_universe
+        from core.swing_lane.earnings_provider import EarningsProvider
+        s = LaneSettings.from_config(cfg)
+        if s.earnings_provider == "none":
+            return False
+        return EarningsProvider(s.earnings_provider, s.log_dir, load_universe()).refresh(today, force=force)
+    except Exception as exc:
+        logger.warning("swing_lane: earnings refresh failed (isolated): %s", exc, exc_info=True)
+        return False

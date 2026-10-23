@@ -1,0 +1,68 @@
+{
+ "data": {
+  "asOf": "Wed, Oct 21, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "eps": "EPS",
+   "surprise": "% Surprise",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests"
+  },
+  "rows": [
+   {
+    "eps": "$7.40",
+    "surprise": "13.5",
+    "time": "time-not-supplied",
+    "symbol": "META",
+    "name": "Meta Platforms, Inc.",
+    "marketCap": "$1,658,617,200,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$6.52",
+    "noOfEsts": "6"
+   },
+   {
+    "eps": "$0.20",
+    "surprise": "-9.09",
+    "time": "time-not-supplied",
+    "symbol": "TSLA",
+    "name": "Tesla, Inc. ",
+    "marketCap": "$1,480,583,150,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.22",
+    "noOfEsts": "10"
+   },
+   {
+    "eps": "$2.95",
+    "surprise": "2.43",
+    "time": "time-not-supplied",
+    "symbol": "IBM",
+    "name": "International Business Machines Corporation",
+    "marketCap": "$237,521,502,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$2.88",
+    "noOfEsts": "6"
+   },
+   {
+    "eps": "$0.65",
+    "surprise": "6.56",
+    "time": "time-not-supplied",
+    "symbol": "T",
+    "name": "AT&T Inc.",
+    "marketCap": "$153,187,402,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.61",
+    "noOfEsts": "7"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

@@ -4220,6 +4220,17 @@ class TradingEngineWithCommentary:
         # for minutes-to-hours. NORMAL priority.
         sup.register("state_persistence", self._state_persistence_loop, TaskPriority.NORMAL)
 
+        # v-swing-lane-2026-10-23: watch-only swing shadow scheduler. Flag OFF
+        # (default) => not registered and its module is never imported. No
+        # orders/broker calls; the loop talks only to the swing gate module.
+        try:
+            if Config().ENABLE_SWING_SHADOW is True:
+                from core.loops.swing_shadow_loop import SwingShadowLoop
+                self._swing_shadow_loop = SwingShadowLoop(self)
+                sup.register("swing_shadow", self._swing_shadow_loop.run, TaskPriority.NORMAL)
+        except Exception as _sw_exc:
+            logger.warning("swing_shadow: not registered (isolated): %s", _sw_exc)
+
         # v-parallel-screener-loop-2026-05-12: extracted from
         # `_analyze_markets_with_commentary` so a crash in the signal
         # pipeline can no longer freeze the watchlist refresh.

@@ -54,6 +54,12 @@ def _open_positions(rows: list) -> dict:
     return fills
 
 
+def _default_earnings_loader(settings):
+    """Provider cache when SWING_EARNINGS_PROVIDER != none, else the legacy parquet tree."""
+    from core.swing_lane.earnings_provider import make_loader
+    return make_loader(settings) or (lambda s: D.load_earnings(settings.data_root, s))
+
+
 def run_eod_scan(settings, now_et: datetime, *, held_symbols: Iterable[str] = (),
                  realized_today: Optional[float] = None,
                  bars_loader: Callable = None, earnings_loader: Callable = None,
@@ -70,7 +76,7 @@ def run_eod_scan(settings, now_et: datetime, *, held_symbols: Iterable[str] = ()
     if not setups:
         return []
     bars_loader = bars_loader or (lambda s: D.load_daily(settings.data_root, s))
-    earnings_loader = earnings_loader or (lambda s: D.load_earnings(settings.data_root, s))
+    earnings_loader = earnings_loader or _default_earnings_loader(settings)
     params = params or C.load_params()
     phash = C.params_hash(params)
     universe = universe if universe is not None else C.load_universe()
@@ -237,7 +243,7 @@ def update_exits(settings, bars_loader: Callable = None, earnings_loader: Callab
     if settings.live or not settings.shadow:
         return []
     bars_loader = bars_loader or (lambda s: D.load_daily(settings.data_root, s))
-    earnings_loader = earnings_loader or (lambda s: D.load_earnings(settings.data_root, s))
+    earnings_loader = earnings_loader or _default_earnings_loader(settings)
     log = ShadowLog(settings.log_dir)
     out = []
     for key, f in _open_positions(log.read()).items():

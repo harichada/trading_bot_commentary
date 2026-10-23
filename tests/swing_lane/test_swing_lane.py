@@ -113,6 +113,9 @@ def test_no_order_or_broker_code():
             else:
                 mods = []
             for m in mods:
+                # v2: earnings_http.py is the single allowlisted-host HTTP client (public calendars only)
+                if p.name == "earnings_http.py" and (m == "urllib" or m.startswith("urllib.")):
+                    continue
                 assert not any(m == b or m.startswith(b + ".") for b in BANNED_IMPORTS), (p, m)
             if isinstance(n, (ast.Name, ast.Attribute, ast.FunctionDef)):
                 ident = getattr(n, "id", None) or getattr(n, "attr", None) or getattr(n, "name", None)

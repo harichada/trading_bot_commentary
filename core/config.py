@@ -4605,6 +4605,17 @@ class Config:
         return self._swing_flag("SWING_SETUP_MEANREV", "trading.swing_setup_meanrev")
 
     @property
+    def SWING_EARNINGS_PROVIDER(self) -> str:
+        """v-swing-lane: earnings calendar source for the swing lane: none|nasdaq|yahoo|auto.
+        Default 'none' (legacy parquet; empty => every entry blocked earnings_data_missing).
+        Env SWING_EARNINGS_PROVIDER or yaml trading.swing_earnings_provider."""
+        v = os.getenv("SWING_EARNINGS_PROVIDER")
+        if v is None:
+            v = self.manager.get("trading.swing_earnings_provider", "none")
+        v = str(v or "none").strip().lower()
+        return v if v in ("none", "nasdaq", "yahoo", "auto") else "none"
+
+    @property
     def SWING_EARNINGS_BLACKOUT(self) -> bool:
         """v-swing-lane: earnings blackout (fail closed when calendar missing). Default True
         (only consulted when the swing lane runs). Env SWING_EARNINGS_BLACKOUT or yaml."""

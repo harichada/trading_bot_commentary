@@ -1,0 +1,35 @@
+{
+ "data": {
+  "asOf": "Thu, Oct 22, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "eps": "EPS",
+   "surprise": "% Surprise",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests"
+  },
+  "rows": [
+   {
+    "eps": "$0.76",
+    "surprise": "35.71",
+    "time": "time-not-supplied",
+    "symbol": "BE",
+    "name": "Bloom Energy Corporation",
+    "marketCap": "$64,139,219,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.56",
+    "noOfEsts": "5"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

@@ -11,7 +11,7 @@ PARAMS_PATH = HERE / "best_params.json"
 UNIVERSE_PATH = HERE / "universe.json"
 REGIME_ONLY = frozenset({"SPY", "QQQ"})
 
-CODE_VERSION = "swing_lane-v1-2026-10-23"
+CODE_VERSION = "swing_lane-v2-2026-10-23"
 
 # SPEC §3/§4 constants (frozen from the backtest)
 MIN_PRICE = 5.0
@@ -60,6 +60,7 @@ class LaneSettings:
     denylist: frozenset = frozenset()
     data_root: str = "data/strategy_hunt"
     log_dir: str = "data/swing_lane"
+    earnings_provider: str = "none"
 
     @classmethod
     def from_config(cls, cfg) -> "LaneSettings":
@@ -70,4 +71,5 @@ class LaneSettings:
             earnings_blackout=bool(cfg.SWING_EARNINGS_BLACKOUT),
             denylist=frozenset(s.upper() for s in cfg.HANDS_OFF_DENYLIST),
             data_root=str(cfg.STRATEGY_HUNT_DATA_ROOT),
+            earnings_provider=str(getattr(cfg, "SWING_EARNINGS_PROVIDER", "none")),
         )
