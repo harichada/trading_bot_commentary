@@ -77,6 +77,7 @@ from analysis.screener import StockScreener
 from core.unified_exit import get_unified_exit_manager, UnifiedExitAction
 from ml.predictor import MLPredictorWithCommentary
 from risk.manager import RiskManagerWithCommentary
+from risk.daily_loss_gate import DailyLossGate
 from risk.backtest import PerformanceAnalyzer
 from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
@@ -494,6 +495,13 @@ class TradingEngineWithCommentary:
         
         # Enhanced error recovery and circuit breakers
         self.circuit_breaker = TradingLossBreaker()
+        # v-daily-loss-pause-entries-2026-11-05: daily-loss circuit state.
+        # The gate latches "new entries paused" per ET day (sidecar
+        # daily_loss_pause.json); circuit_halted is only ever set by the
+        # legacy risk.daily_loss_action=halt path.
+        self._daily_loss_gate = DailyLossGate()
+        self.circuit_halted = False
+        self.circuit_halt_reason = None
         self.error_counts = {}
         self.last_error_time = None
         self.consecutive_errors = 0
@@ -1328,7 +1336,17 @@ class TradingEngineWithCommentary:
     @order_circuit_breaker
     async def _execute_real_trade(self, signal) -> bool:
         """Execute real trade through Schwab with proper error handling"""
-        
+
+        # v-daily-loss-pause-entries-2026-11-05: defense in depth. This method
+        # only ever OPENS (BUY / SELL_SHORT) — exits go through
+        # _close_real_position — so the daily-loss entry pause applies here
+        # too (covers the retry paths that bypass the signal router).
+        _dl_paused, _dl_reason = self._daily_loss_entries_paused()
+        if _dl_paused:
+            self._audit("order_entry", signal.symbol, "skip", "daily_loss_entries_paused",
+                        circuit=_dl_reason)
+            return False
+
         if not self.schwab_client or not self.account_id:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -5535,107 +5553,22 @@ class TradingEngineWithCommentary:
                             )
                         logger.info(f"Schwab P&L Check: ${schwab_pnl:.2f} (Limit: ${self.risk_manager.effective_balance() * 0.05:.2f})")
                 
-                # v-emergency-stop-bot-only-2026-06-17: this emergency
-                # stop used to trip on ACCOUNT-WIDE schwab_pnl, which
-                # includes external/manual holdings. On 2026-06-17 a
-                # manual SPCX position bled past 5% of equity, fired
-                # this stop, set is_running=False, and silently zombied
-                # the bot (0 bot trades that day). Same flaw the #31
-                # circuit fix addressed in risk/manager — but this is a
-                # SEPARATE path. Honour the same flag: under
-                # ENABLE_BOT_ONLY_PNL_CIRCUIT the emergency stop reads
-                # bot-only P&L, so external positions can never kill
-                # the engine. Fall back to account-wide only when the
-                # circuit is explicitly off.
-                _emrg_cfg = Config()
-                if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT:
-                    _emrg_pnl = self.risk_manager.bot_daily_pnl
-                else:
-                    _emrg_pnl = schwab_pnl
-                # Only check emergency stop with the circuit-selected P&L
-                # v-go-live-5k-r1-2026-09-28: the emergency stop is a risk
-                # decision, so it reads the effective (allocation-capped)
-                # equity — 5% of $5,000 is $250, not 5% of the whole account.
-                if _emrg_pnl < 0 and abs(_emrg_pnl) > self.risk_manager.effective_balance() * 0.05:
-                    # Double-check before halting. Under the bot-only
-                    # circuit, recompute bot P&L from local state (it's
-                    # the authoritative, network-free value) — do NOT
-                    # abort on account-wide fresh_pnl, which would let
-                    # external profit cancel a legitimate bot stop (and
-                    # was half of the 2026-06-17 confusion). Account-wide
-                    # mode keeps the original fresh-Schwab re-check.
-                    if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT:
-                        try:
-                            _recheck = self._compute_bot_daily_pnl()
-                            self.risk_manager.bot_daily_pnl = _recheck
-                        except Exception:
-                            _recheck = _emrg_pnl
-                        if _recheck >= 0 or abs(_recheck) <= self.risk_manager.effective_balance() * 0.05:
-                            logger.warning(
-                                "Emergency stop ABORTED - bot-only P&L "
-                                "recheck within limit: $%.2f", _recheck)
-                            continue
-                    elif self.schwab_client:
-                        fresh_account_info = await self._get_real_account_info()
-                        if fresh_account_info:
-                            fresh_pnl = fresh_account_info.get('day_pnl', 0)
-                            logger.warning(f"Emergency stop check - Fresh P&L: ${fresh_pnl:.2f}")
-
-                            # If fresh data shows we're not in loss, abort emergency stop
-                            if fresh_pnl >= 0:
-                                logger.warning(f"Emergency stop ABORTED - Fresh data shows profit: ${fresh_pnl:.2f}")
-                                self.commentary.add_commentary(TradingCommentary(
-                                    timestamp=datetime.now(),
-                                    type=CommentaryType.INFO,
-                                    symbol=None,
-                                    title="✅ False Alarm",
-                                    message=f"Emergency stop cancelled - Account is actually in profit: ${fresh_pnl:.2f}",
-                                    importance=7
-                                ))
-                                continue  # Skip emergency stop
-                    
-                    # Check if manual close only is enabled
-                    if self.manual_close_only:
-                        # v-emrg-pnl-commentary-2026-09-14: use _emrg_pnl
-                        # (the circuit-selected P&L) in the message, not
-                        # schwab_pnl. Fixes false trip RCA where account-
-                        # wide P&L was -$3k but bot-only was $0.
-                        _pnl_label = "bot-only" if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT else "account"
-                        self.commentary.add_commentary(TradingCommentary(
-                            timestamp=datetime.now(),
-                            type=CommentaryType.WARNING,
-                            symbol=None,
-                            title="🚨 EMERGENCY STOP (Manual Mode)",
-                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.effective_balance() * 0.05:.2f}). "
-                                   f"Manual close only is ON - YOU must close positions manually!",
-                            importance=10
-                        ))
-                        
-                        # Stop trading but DON'T close positions
-                        self.is_running = False
-                        break
-                    else:
-                        # v-emrg-pnl-commentary-2026-09-14: use _emrg_pnl
-                        # (the circuit-selected P&L) in the message, not
-                        # schwab_pnl. Fixes false trip RCA where account-
-                        # wide P&L was -$3k but bot-only was $0.
-                        _pnl_label = "bot-only" if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT else "account"
-                        self.commentary.add_commentary(TradingCommentary(
-                            timestamp=datetime.now(),
-                            type=CommentaryType.WARNING,
-                            symbol=None,
-                            title="🚨 EMERGENCY STOP",
-                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.effective_balance() * 0.05:.2f}). Closing all positions.",
-                            importance=10
-                        ))
-                        
-                        # Close all positions
-                        for symbol in list(self.positions.keys()):
-                            position = self.positions[symbol]
-                            await self._close_position_with_commentary(position, "emergency_stop")
-                    
-                    self.is_running = False
+                # v-daily-loss-pause-entries-2026-11-05: the emergency stop
+                # lives in _check_emergency_daily_loss(). Under the default
+                # risk.daily_loss_action=pause_entries it only latches the
+                # DailyLossGate (new entries paused) and this loop — and
+                # every other supervised loop — keeps running. Legacy
+                # `halt` keeps the old close-all + is_running=False.
+                _emrg_outcome = await self._check_emergency_daily_loss(schwab_pnl)
+                if _emrg_outcome == "abort":
+                    continue
+                if _emrg_outcome == "halt":
                     break
+                # Latch/refresh the entry pause from the risk-manager
+                # MAX_DAILY_LOSS circuit every cycle (cheap, local state)
+                # so the dashboard and decision log see it even when no
+                # signal reaches the router.
+                self._daily_loss_entries_paused()
                 # Check order status for real trades
                 if self.mode == TradingMode.LIVE:
                     await self._check_order_status()
@@ -6448,6 +6381,19 @@ class TradingEngineWithCommentary:
         # Exits and position management never pass through this router.
         if bool(getattr(Config(), "BLOCK_NEW_ENTRIES", False)):
             self._audit("signal_router", signal.symbol, "skip", "entries_blocked_by_console")
+            return
+
+        # v-daily-loss-pause-entries-2026-11-05: daily-loss circuit (MAX_DAILY_LOSS
+        # limit or the 5% emergency stop) under risk.daily_loss_action=
+        # pause_entries blocks EVERY new entry routed here — long, short,
+        # day_trade, swing, mean_rev, ORB and adds/pyramids alike. This router
+        # never carries exits, so stops / targets / re-brackets are untouched.
+        _dl_paused, _dl_reason = self._daily_loss_entries_paused()
+        if _dl_paused:
+            self._audit("signal_router", signal.symbol, "skip", "daily_loss_entries_paused",
+                        circuit=_dl_reason,
+                        signal_type=signal.signal_type.value,
+                        strategy=signal.reasoning.get("strategy", "unknown"))
             return
 
         # v-learning-loop-2026-10-22: daily REALIZED loss halt for NEW entries
@@ -10266,6 +10212,228 @@ class TradingEngineWithCommentary:
             )
 
         return compute_position_day_pnl(position, on_outlier=_on_outlier)
+
+    # ── v-daily-loss-pause-entries-2026-11-05 ─────────────────────────────
+    # Root cause of the 2026-11-05 incident (10:12 + 11:56 ET): the 5%
+    # emergency stop in _analysis_loop_body set self.is_running=False. Every
+    # supervised loop (`while self.is_running:` — analysis, position, quote
+    # streamer, persistence, indices, heartbeat ...) then exited, start()'s
+    # wait loop fell through to supervisor.stop_all(), /api/status reported
+    # bot_running=false and scripts/bot_watchdog.sh restarted the bot, which
+    # re-tripped on the same account P&L until the restart budget ran out.
+    # Under risk.daily_loss_action=pause_entries (default) both circuits now
+    # only latch a DailyLossGate that the entry paths consult.
+
+    def _get_daily_loss_gate(self) -> DailyLossGate:
+        gate = getattr(self, "_daily_loss_gate", None)
+        if gate is None:
+            gate = DailyLossGate()
+            self._daily_loss_gate = gate
+        return gate
+
+    def _trip_daily_loss_pause(self, reason: str, pnl: float, limit: float,
+                               measure: str) -> bool:
+        """Latch "new entries paused" for today. Commentary + audit once."""
+        rm = getattr(self, "risk_manager", None)
+        schwab_pnl = getattr(rm, "schwab_daily_pnl", None) if rm is not None else None
+        bot_pnl = getattr(rm, "bot_daily_pnl", None) if rm is not None else None
+        new = self._get_daily_loss_gate().trip(
+            reason, pnl=round(float(pnl), 2), limit=round(float(limit), 2),
+            measure=measure, schwab_pnl=schwab_pnl, bot_pnl=bot_pnl,
+        )
+        if new:
+            try:
+                self._audit("daily_loss_circuit", None, "entries_paused", reason,
+                            pnl=round(float(pnl), 2), limit=round(float(limit), 2),
+                            measure=measure)
+            except Exception:
+                pass
+            try:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=None,
+                    title="⏸️ New Entries Paused — Daily Loss Circuit",
+                    message=(f"{measure}: ${float(pnl):.2f} breached the limit "
+                             f"(${float(limit):.2f}, reason={reason}). NEW entries are "
+                             f"paused for the rest of the day. Analysis, position "
+                             f"monitoring, exits, stops and re-brackets continue. "
+                             f"No positions were closed."),
+                    data={"reason": reason, "pnl": float(pnl), "limit": float(limit)},
+                    importance=10,
+                ))
+            except Exception:
+                pass
+        return new
+
+    def _daily_loss_entries_paused(self) -> Tuple[bool, Optional[str]]:
+        """(paused, reason) for NEW entries under pause_entries mode.
+
+        Also evaluates the risk-manager MAX_DAILY_LOSS circuit live (pure
+        local state) and latches on a breach, so a breach between P&L
+        refreshes is never missed. Returns (False, None) in legacy `halt`
+        mode — there the old paths decide. Fails CLOSED (paused) only if
+        the latch itself cannot be read.
+        """
+        try:
+            if Config().DAILY_LOSS_ACTION != "pause_entries":
+                return False, None
+        except Exception:
+            pass
+        try:
+            rm = getattr(self, "risk_manager", None)
+            # Legacy parity: the MAX_DAILY_LOSS circuit was only consulted
+            # outside simulation (_evaluate_trading_conditions).
+            if rm is not None and getattr(self, "mode", None) != TradingMode.SIMULATION_WITH_COMMENTARY:
+                breached, why, pnl, limit = rm.daily_loss_limit_breach()
+                if breached and pnl < 0 and limit > 0:
+                    _, label = rm.daily_loss_circuit_pnl()
+                    self._trip_daily_loss_pause("daily_loss_limit", pnl, limit, label)
+        except Exception as exc:
+            logger.warning("daily_loss gate: live limit check failed: %s", exc)
+        try:
+            return self._get_daily_loss_gate().is_paused()
+        except Exception as exc:
+            logger.error("daily_loss gate unreadable — failing closed: %s", exc)
+            return True, "daily_loss_gate_error"
+
+    def _daily_loss_status(self) -> dict:
+        """Fields for /api/status (never raises)."""
+        out = {
+            "daily_loss_action": "pause_entries",
+            "entries_paused": False,
+            "entries_paused_reason": None,
+            "entries_paused_since": None,
+            "circuit_halted": bool(getattr(self, "circuit_halted", False)),
+            "circuit_halt_reason": getattr(self, "circuit_halt_reason", None),
+            "daily_loss_measure": None,
+        }
+        try:
+            out["daily_loss_action"] = Config().DAILY_LOSS_ACTION
+            rm = getattr(self, "risk_manager", None)
+            if rm is not None:
+                out["daily_loss_measure"] = (
+                    "bot_managed" if rm.daily_loss_uses_bot_pnl() else "account")
+            if out["daily_loss_action"] == "pause_entries":
+                st = self._get_daily_loss_gate().status()
+                out["entries_paused"] = st["entries_paused"]
+                out["entries_paused_reason"] = st["entries_paused_reason"]
+                out["entries_paused_since"] = st["entries_paused_since"]
+        except Exception as exc:
+            logger.debug("daily_loss_status failed: %s", exc)
+        return out
+
+    async def _check_emergency_daily_loss(self, schwab_pnl: float) -> str:
+        """The 5%-of-effective-equity emergency stop, lifted out of
+        _analysis_loop_body. Returns:
+          "ok"    — nothing to do (or, under pause_entries, entries paused);
+          "abort" — re-check showed a false alarm (caller `continue`s, as before);
+          "halt"  — legacy halt: positions closed / is_running=False (caller breaks).
+        """
+        # v-emergency-stop-bot-only-2026-06-17: this emergency
+        # stop used to trip on ACCOUNT-WIDE schwab_pnl, which
+        # includes external/manual holdings. On 2026-06-17 a
+        # manual SPCX position bled past 5% of equity, fired
+        # this stop, set is_running=False, and silently zombied
+        # the bot (0 bot trades that day). Honour the bot-only
+        # selector (ENABLE_BOT_ONLY_PNL_CIRCUIT, or the new
+        # DAILY_LOSS_BOT_MANAGED_ONLY) so external positions can
+        # never kill the engine.
+        _bot_only = self.risk_manager.daily_loss_uses_bot_pnl()
+        if _bot_only:
+            _emrg_pnl = self.risk_manager.bot_daily_pnl
+        else:
+            _emrg_pnl = schwab_pnl
+        _emrg_limit = self.risk_manager.effective_balance() * 0.05
+        # v-go-live-5k-r1-2026-09-28: the emergency stop is a risk
+        # decision, so it reads the effective (allocation-capped)
+        # equity — 5% of $5,000 is $250, not 5% of the whole account.
+        _emrg_tripped = False
+        if _emrg_pnl < 0 and abs(_emrg_pnl) > self.risk_manager.effective_balance() * 0.05:
+            _emrg_tripped = True
+        if not _emrg_tripped:
+            return "ok"
+
+        # Double-check before acting. Under the bot-only circuit, recompute
+        # bot P&L from local state (authoritative, network-free) — do NOT
+        # abort on account-wide fresh_pnl. Account-wide mode keeps the
+        # original fresh-Schwab re-check.
+        if _bot_only:
+            try:
+                _recheck = self._compute_bot_daily_pnl()
+                self.risk_manager.bot_daily_pnl = _recheck
+            except Exception:
+                _recheck = _emrg_pnl
+            if _recheck >= 0 or abs(_recheck) <= self.risk_manager.effective_balance() * 0.05:
+                logger.warning(
+                    "Emergency stop ABORTED - bot-only P&L "
+                    "recheck within limit: $%.2f", _recheck)
+                return "abort"
+            _emrg_pnl = _recheck
+        elif self.schwab_client:
+            fresh_account_info = await self._get_real_account_info()
+            if fresh_account_info:
+                fresh_pnl = fresh_account_info.get('day_pnl', 0)
+                logger.warning(f"Emergency stop check - Fresh P&L: ${fresh_pnl:.2f}")
+                if fresh_pnl >= 0:
+                    logger.warning(f"Emergency stop ABORTED - Fresh data shows profit: ${fresh_pnl:.2f}")
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.INFO,
+                        symbol=None,
+                        title="✅ False Alarm",
+                        message=f"Emergency stop cancelled - Account is actually in profit: ${fresh_pnl:.2f}",
+                        importance=7
+                    ))
+                    return "abort"
+
+        _pnl_label = "bot-only" if _bot_only else "account"
+
+        # ── default: pause NEW entries only. Nothing closed, loops live. ──
+        if Config().DAILY_LOSS_ACTION == "pause_entries":
+            self._trip_daily_loss_pause(
+                "emergency_stop", _emrg_pnl, _emrg_limit,
+                f"{_pnl_label} daily P&L (5% emergency stop)")
+            return "ok"
+
+        # ── legacy `halt` (risk.daily_loss_action: halt) ──
+        self.circuit_halted = True
+        self.circuit_halt_reason = (
+            f"emergency_stop {_pnl_label} pnl={_emrg_pnl:.2f} limit={_emrg_limit:.2f}")
+        if self.manual_close_only:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=None,
+                title="🚨 EMERGENCY STOP (Manual Mode)",
+                message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${_emrg_limit:.2f}). "
+                       f"Manual close only is ON - YOU must close positions manually!",
+                importance=10
+            ))
+            # Stop trading but DON'T close positions
+            self.is_running = False
+            return "halt"
+
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=None,
+            title="🚨 EMERGENCY STOP",
+            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${_emrg_limit:.2f}). Closing all positions.",
+            importance=10
+        ))
+        # Close all positions — never hands-off denylist symbols (HQGE, SPCX).
+        # _close_position_with_commentary also refuses external / manual /
+        # long-term / denylist; this skip is belt and braces.
+        _denylist = Config().HANDS_OFF_DENYLIST
+        for symbol in list(self.positions.keys()):
+            if str(symbol).upper() in _denylist:
+                logger.warning("emergency_stop: hands-off %s left untouched", symbol)
+                continue
+            position = self.positions[symbol]
+            await self._close_position_with_commentary(position, "emergency_stop")
+        self.is_running = False
+        return "halt"
 
     def _compute_bot_daily_pnl(self) -> float:
         """v-bot-only-pnl-circuit-2026-06-08 + v-hands-off-denylist-2026-09-14:

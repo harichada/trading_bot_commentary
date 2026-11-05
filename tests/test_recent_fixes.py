@@ -2263,6 +2263,13 @@ class TestBotOnlyPnLCircuit:
         anchor = src.find("def check_trading_allowed(self)")
         assert anchor != -1, "check_trading_allowed signature drifted"
         body = src[anchor : anchor + 3000]
+        # v-daily-loss-pause-entries-2026-11-05: the P&L selection moved
+        # into daily_loss_circuit_pnl()/daily_loss_uses_bot_pnl(), which
+        # check_trading_allowed reaches via daily_loss_limit_breach().
+        assert "self.daily_loss_limit_breach()" in body
+        helper = src.find("def daily_loss_uses_bot_pnl(self)")
+        assert helper != -1
+        body = src[helper : anchor] + body
         assert "ENABLE_BOT_ONLY_PNL_CIRCUIT" in body, (
             "check_trading_allowed must reference "
             "ENABLE_BOT_ONLY_PNL_CIRCUIT"

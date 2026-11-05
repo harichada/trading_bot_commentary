@@ -15,6 +15,8 @@
 #        "live"`. An HTTP 200 from a process whose engine thread has stopped
 #        or has fallen back to simulation is NOT healthy: that is precisely
 #        the state an operator needs to hear about.
+#        `"entries_paused": true` (daily-loss circuit, pause_entries) is healthy;
+#        `"circuit_halted": true` (legacy daily-loss halt) is logged, never restarted.
 #   2. Two consecutive failures (state kept across cron runs) and fewer than
 #      MAX_RESTARTS_PER_DAY restarts today  ->  restart:
 #        TERM the bot, wait 20 s, KILL if still alive;
@@ -43,7 +45,7 @@ DRY_RUN=0
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "bot_watchdog: unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -171,6 +173,11 @@ json_str() {
         | head -1 | sed -E 's/.*"([^"]*)"$/\1/'
 }
 
+json_true() {
+    # json_true <key> <body> -> success when the body has "<key>": true.
+    printf '%s' "$2" | grep -qE "\"$1\"[[:space:]]*:[[:space:]]*true"
+}
+
 check_health() {
     # Echoes "ok" or a reason, followed by " http=<code> mode=<mode>".
     local raw code body mode
@@ -183,11 +190,27 @@ check_health() {
         return 0
     fi
     if ! printf '%s' "$body" | grep -qE '"bot_running"[[:space:]]*:[[:space:]]*true'; then
+        # v-daily-loss-pause-entries-2026-11-05: a deliberate legacy
+        # daily-loss halt (risk.daily_loss_action=halt) is NOT a crash.
+        # Restarting would only re-trip it on the same day P&L and burn the
+        # restart budget (2026-11-05 10:12 + 11:56 ET).
+        if json_true circuit_halted "$body"; then
+            echo "circuit_halted http=$code mode=${mode:-?}"
+            return 0
+        fi
         echo "bot_not_running http=$code mode=${mode:-?}"
         return 0
     fi
     if require_live_now && [[ "$mode" != "live" ]]; then
         echo "mode_not_live http=$code mode=${mode:-?}"
+        return 0
+    fi
+    # v-daily-loss-pause-entries-2026-11-05: entries paused by the daily-loss
+    # circuit is a healthy state (all loops running, only NEW entries held).
+    if json_true entries_paused "$body"; then
+        local why
+        why="$(json_str entries_paused_reason "$body")"
+        echo "ok http=$code mode=${mode:-?} entries_paused=${why:-yes}"
         return 0
     fi
     echo "ok http=$code mode=${mode:-?}"
@@ -341,6 +364,16 @@ if [[ "$REASON" == "ok" ]]; then
     else
         log "health ok ($DETAIL)"
     fi
+    FAIL_COUNT=0
+    save_state
+    exit 0
+fi
+
+if [[ "$REASON" == "circuit_halted" ]]; then
+    log "engine deliberately HALTED by the daily-loss circuit ($DETAIL) —"\
+        "not a crash, no restart (risk.daily_loss_action=halt)."\
+        "OPERATOR ACTION REQUIRED to resume; set risk.daily_loss_action:"\
+        "pause_entries to keep loops alive on a trip"
     FAIL_COUNT=0
     save_state
     exit 0

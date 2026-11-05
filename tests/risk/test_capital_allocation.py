@@ -154,6 +154,8 @@ class FakeConfig:
         self.ENABLE_BOT_ONLY_PNL_CIRCUIT = True
         self.MAX_DAILY_LOSS = 0.03
         self.MAX_CONSECUTIVE_LOSSES = 3
+        self.DAILY_LOSS_ACTION = "pause_entries"
+        self.DAILY_LOSS_BOT_MANAGED_ONLY = False
         for key, value in overrides.items():
             setattr(self, key, value)
 
@@ -295,6 +297,9 @@ def test_sync_on_keeps_a_smaller_real_balance(cfg):
 
 def test_circuit_on_uses_the_capped_balance(cfg):
     """3% of a $5,000 allocation is $150 — not 3% of the $46.5k account."""
+    # v-daily-loss-pause-entries-2026-11-05: check_trading_allowed only
+    # refuses on a daily-loss breach under the legacy `halt` action.
+    cfg.DAILY_LOSS_ACTION = "halt"
     cfg.BOT_CAPITAL_ALLOCATION = 5000.0
     mgr = make_manager()
     mgr.sync_with_schwab_data(dict(SCHWAB))
@@ -509,6 +514,9 @@ def test_a_write_site_cannot_defeat_the_sizing_cap(cfg):
 
 def test_a_write_site_cannot_defeat_the_daily_loss_stop(cfg):
     """3% of the $5,000 allocation is -$150, not 3% of the $46.5k account."""
+    # v-daily-loss-pause-entries-2026-11-05: check_trading_allowed only
+    # refuses on a daily-loss breach under the legacy `halt` action.
+    cfg.DAILY_LOSS_ACTION = "halt"
     cfg.BOT_CAPITAL_ALLOCATION = 5000.0
     mgr = make_manager()
     mgr.sync_with_schwab_data(dict(SCHWAB))

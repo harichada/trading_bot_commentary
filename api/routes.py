@@ -1103,8 +1103,33 @@ async def get_bot_status():
         "mode": trading_engine.mode.value if trading_engine else "not_started",
         "positions_count": len(trading_engine.positions) if trading_engine else 0,
         "schwab_connected": trading_engine.schwab_client is not None if trading_engine else False,
-        "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00"
+        "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00",
+        # v-daily-loss-pause-entries-2026-11-05: daily-loss circuit state.
+        # entries_paused=True is a deliberate, healthy state (loops running,
+        # only NEW entries blocked) — scripts/bot_watchdog.sh treats it as ok.
+        **_daily_loss_status_fields(),
     }
+
+
+def _daily_loss_status_fields() -> dict:
+    """entries_paused / entries_paused_reason (+ context) for /api/status.
+    Never raises: the watchdog parses this endpoint."""
+    base = {
+        "entries_paused": False,
+        "entries_paused_reason": None,
+        "entries_paused_since": None,
+        "daily_loss_action": None,
+        "daily_loss_measure": None,
+        "circuit_halted": False,
+        "circuit_halt_reason": None,
+    }
+    try:
+        fn = getattr(trading_engine, "_daily_loss_status", None) if trading_engine else None
+        if callable(fn):
+            base.update(fn())
+    except Exception:
+        pass
+    return base
 
 
 @app.get("/api/system-stats")

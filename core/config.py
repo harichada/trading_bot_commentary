@@ -98,6 +98,11 @@ class ConfigManager:
                 'calculate_max_drawdown': True,
                 'risk_free_rate': 0.02
             },
+            # v-daily-loss-pause-entries-2026-11-05: see Config.DAILY_LOSS_ACTION
+            'risk': {
+                'daily_loss_action': 'pause_entries',   # or 'halt' (legacy)
+                'daily_loss_bot_managed_only': False,
+            },
             'error_recovery': {
                 'max_retries': 3,
                 'retry_delay': 1.0,
@@ -179,6 +184,7 @@ config_manager = ConfigManager()
 
 
 _ENV_FRACTION_WARNED = set()
+_DAILY_LOSS_ACTION_WARNED = set()
 
 
 def _env_fraction(name: str, yaml_value):
@@ -1900,6 +1906,67 @@ class Config:
         if env_val is not None:
             return env_val.lower() in ("1", "true", "yes", "on")
         return bool(self.manager.get('trading.enable_bot_only_pnl_circuit', True))
+
+    # ── v-daily-loss-pause-entries-2026-11-05 ─────────────────────────────
+    # Owner requirement (2026-11-05): the daily-loss circuit must ONLY pause
+    # NEW entries. Incident: emergency_stop fired at 10:12 and 11:56 ET on an
+    # ACCOUNT day P&L of ~-$7.5k (limit $1,250, 0 bot fills), set
+    # engine.is_running=False, every supervised loop exited, /api/status said
+    # bot_running=false and the watchdog burned its restart budget.
+    _DAILY_LOSS_ACTIONS = ("pause_entries", "halt")
+
+    @property
+    def DAILY_LOSS_ACTION(self) -> str:
+        """What the daily-loss / emergency-stop circuit does when it trips.
+
+          * ``pause_entries`` (default) — block every NEW entry (long, short,
+            day_trade, swing, mean_rev, adds/pyramids) for the rest of the ET
+            day. Analysis, position monitoring, exits/stops/re-brackets,
+            position sync, P&L refresh, heartbeat, decision logging and the
+            dashboard keep running. Nothing is flattened.
+          * ``halt`` — legacy behaviour: the analysis-loop emergency stop
+            closes bot-managed positions (never hands-off / external / LT)
+            and sets is_running=False; the risk-manager limit makes the
+            analysis loop skip market analysis.
+
+        Priority: env DAILY_LOSS_ACTION > yaml risk.daily_loss_action >
+        default ``pause_entries``. Unknown values fall back to
+        ``pause_entries`` (the non-destructive choice) and are logged once.
+        """
+        raw = os.getenv("DAILY_LOSS_ACTION")
+        if raw is None or not str(raw).strip():
+            raw = self.manager.get('risk.daily_loss_action', 'pause_entries')
+        value = str(raw if raw is not None else '').strip().lower()
+        if value in self._DAILY_LOSS_ACTIONS:
+            return value
+        if value not in _DAILY_LOSS_ACTION_WARNED:
+            _DAILY_LOSS_ACTION_WARNED.add(value)
+            logging.getLogger('TradingBot').warning(
+                "DAILY_LOSS_ACTION=%r is not one of %s — using pause_entries",
+                raw, self._DAILY_LOSS_ACTIONS,
+            )
+        return "pause_entries"
+
+    @property
+    def DAILY_LOSS_BOT_MANAGED_ONLY(self) -> bool:
+        """Measure the daily-loss limit (risk-manager circuit AND the 5%
+        emergency stop) on BOT-MANAGED P&L only — today's realized bot trades
+        plus unrealized P&L of open managed_by_bot positions, excluding
+        hands-off denylist / external / manually-managed / long-term
+        positions (``engine._compute_bot_daily_pnl``).
+
+        Default False (off). When off, the pre-existing selector
+        ``ENABLE_BOT_ONLY_PNL_CIRCUIT`` decides, unchanged. When on, it
+        forces the bot-only measure even if ENABLE_BOT_ONLY_PNL_CIRCUIT is
+        false (e.g. a yaml that pins it false).
+
+        Env DAILY_LOSS_BOT_MANAGED_ONLY (1/true/yes/on) > yaml
+        risk.daily_loss_bot_managed_only > False.
+        """
+        env_val = os.getenv("DAILY_LOSS_BOT_MANAGED_ONLY")
+        if env_val is not None and env_val.strip():
+            return env_val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('risk.daily_loss_bot_managed_only', False))
 
     @property
     def HANDS_OFF_DENYLIST(self) -> frozenset:

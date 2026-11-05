@@ -648,6 +648,39 @@ class RiskManagerWithCommentary:
 
         return position_size
 
+    def daily_loss_uses_bot_pnl(self) -> bool:
+        """v-daily-loss-pause-entries-2026-11-05: True when the daily-loss
+        circuit (and the engine emergency stop) measure BOT-managed P&L.
+        DAILY_LOSS_BOT_MANAGED_ONLY (default off) forces it; otherwise the
+        pre-existing ENABLE_BOT_ONLY_PNL_CIRCUIT selector decides."""
+        cfg = Config()
+        try:
+            if getattr(cfg, "DAILY_LOSS_BOT_MANAGED_ONLY", False) is True:
+                return True
+        except Exception:
+            pass
+        return bool(cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT)
+
+    def daily_loss_circuit_pnl(self) -> Tuple[float, str]:
+        """(pnl, label) the daily-loss circuit evaluates."""
+        if self.daily_loss_uses_bot_pnl():
+            return self.bot_daily_pnl, "Bot daily loss"
+        return self.schwab_daily_pnl, "Daily loss"
+
+    def daily_loss_limit_breach(self) -> Tuple[bool, str, float, float]:
+        """(breached, reason, pnl, limit_usd) for the MAX_DAILY_LOSS circuit.
+        Same comparison as before (pnl <= -MAX_DAILY_LOSS x effective
+        balance). Pure read — never mutates state."""
+        _circuit_pnl, _circuit_label = self.daily_loss_circuit_pnl()
+        _limit = Config().MAX_DAILY_LOSS * self.effective_balance()
+        if _circuit_pnl <= -_limit:
+            return True, (
+                f"{_circuit_label} limit exceeded "
+                f"(P&L: ${_circuit_pnl:.2f}, "
+                f"schwab_pnl: ${self.schwab_daily_pnl:.2f})"
+            ), _circuit_pnl, _limit
+        return False, "", _circuit_pnl, _limit
+
     def check_trading_allowed(self) -> Tuple[bool, str]:
         """Check if trading is allowed"""
         if self.margin_call:
@@ -668,19 +701,16 @@ class RiskManagerWithCommentary:
         # bot_daily_pnl. When False, fall back to schwab_daily_pnl
         # so an operator can revert behavior at runtime via Config.yaml.
         # schwab_daily_pnl remains updated for dashboard display.
-        _cfg_circuit = Config()
-        if _cfg_circuit.ENABLE_BOT_ONLY_PNL_CIRCUIT:
-            _circuit_pnl = self.bot_daily_pnl
-            _circuit_label = "Bot daily loss"
-        else:
-            _circuit_pnl = self.schwab_daily_pnl
-            _circuit_label = "Daily loss"
-        if _circuit_pnl <= -_cfg_circuit.MAX_DAILY_LOSS * self.effective_balance():
-            return False, (
-                f"{_circuit_label} limit exceeded "
-                f"(P&L: ${_circuit_pnl:.2f}, "
-                f"schwab_pnl: ${self.schwab_daily_pnl:.2f})"
-            )
+        #
+        # v-daily-loss-pause-entries-2026-11-05: the P&L selection lives in
+        # daily_loss_circuit_pnl() (also honours DAILY_LOSS_BOT_MANAGED_ONLY).
+        # Under risk.daily_loss_action=pause_entries (default) a breach no
+        # longer returns False here — that made the analysis loop skip ALL
+        # market analysis. The engine's DailyLossGate pauses NEW entries at
+        # the signal router instead. Legacy `halt` keeps the old return.
+        _breached, _breach_reason, _pnl, _limit = self.daily_loss_limit_breach()
+        if _breached and getattr(Config(), "DAILY_LOSS_ACTION", "pause_entries") == "halt":
+            return False, _breach_reason
 
         # v-consec-loss-daily-reset-2026-05-21: auto-reset at calendar-day
         # rollover. If the last loss was on a prior date, today is a fresh
