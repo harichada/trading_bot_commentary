@@ -92,6 +92,68 @@ async def check_broker_position_qty(
         return 0  # fail-safe: assume flat on error
 
 
+async def read_broker_position_qty(
+    engine: "TradingEngineWithCommentary",
+    symbol: str,
+) -> Optional[int]:
+    """v-live-scale-out-gate-2026-11-11: read-only, error-AWARE broker qty.
+
+    Unlike check_broker_position_qty (which returns 0 — "flat" — on ANY
+    error), this distinguishes "could not read" from "flat":
+
+      * ``None``  — no client/account, timeout, exception, non-200, or a
+                    payload without ``securitiesAccount`` (unknown!)
+      * ``0``     — read succeeded and the symbol is not held (flat)
+      * ``int``   — SIGNED net quantity (longQuantity - shortQuantity);
+                    positive = long, negative = short
+
+    Only GETs the account (positions field); never places/cancels anything.
+    Callers that are about to cancel protection MUST treat ``None`` as
+    "do nothing" (fail closed).
+    """
+    client = getattr(engine, "schwab_client", None)
+    account_hash = getattr(engine, "account_hash", None)
+    if not client or not account_hash:
+        return None
+    try:
+        fields = None
+        try:
+            fields = [client.Account.Fields.POSITIONS]
+        except Exception:
+            fields = None
+        if fields is not None:
+            response = await broker_call(
+                client.get_account, account_hash, fields=fields,
+                timeout=6.0, site="broker_qty_read",
+            )
+        else:
+            response = await broker_call(
+                client.get_account, account_hash,
+                timeout=6.0, site="broker_qty_read",
+            )
+        if getattr(response, "status_code", None) != 200:
+            logger.warning(
+                "broker_qty_read_failed symbol=%s status=%s",
+                symbol, getattr(response, "status_code", None),
+            )
+            return None
+        data = response.json() or {}
+        acct = data.get("securitiesAccount")
+        if not isinstance(acct, dict):
+            return None
+        net = 0.0
+        for pos in acct.get("positions", []) or []:
+            inst = pos.get("instrument", {}) or {}
+            if inst.get("symbol") != symbol:
+                continue
+            net += float(pos.get("longQuantity", 0) or 0)
+            net -= float(pos.get("shortQuantity", 0) or 0)
+        return int(round(net))
+    except Exception as exc:
+        logger.warning("broker_qty_read_error symbol=%s err=%s", symbol, exc)
+        return None
+
+
 async def handle_broker_flat_detected(
     engine: "TradingEngineWithCommentary",
     position: "Position",

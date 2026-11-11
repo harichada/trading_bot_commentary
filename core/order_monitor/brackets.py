@@ -31,6 +31,7 @@ from core.order_monitor.broker_flat import (
     check_broker_position_qty,
     handle_broker_flat_detected,
     is_broker_flat_rejection,
+    read_broker_position_qty,
 )
 
 logger = logging.getLogger("TradingBot")
@@ -137,6 +138,116 @@ async def check_trail_replace(
     await replace_bracket_with_new_stop(engine, position, trail)
 
 
+def _broker_qty_guard_enabled() -> bool:
+    try:
+        from core.config import Config
+        return bool(Config().BRACKET_REPLACE_BROKER_QTY_GUARD)
+    except Exception:
+        return True  # fail closed: guard on
+
+
+async def read_bracket_protected_qty(
+    engine: "TradingEngineWithCommentary",
+    bracket_id: str,
+) -> Optional[int]:
+    """v-live-scale-out-gate-2026-11-11: how many shares the working OCO
+    `bracket_id` pledges (max leg quantity), or None if it can't be read.
+    Read-only (GET order)."""
+    if not bracket_id:
+        return None
+    try:
+        response = await broker_call(
+            engine.schwab_client.get_order, bracket_id, engine.account_hash,
+            site="bracket_qty_read",
+        )
+        if getattr(response, "status_code", None) != 200:
+            return None
+        order = response.json() or {}
+    except Exception:
+        return None
+
+    qtys = []
+
+    def _collect(o: dict) -> None:
+        q = o.get("quantity")
+        if q is None:
+            for leg in o.get("orderLegCollection", []) or []:
+                if leg.get("quantity") is not None:
+                    q = leg.get("quantity")
+                    break
+        if q is not None:
+            try:
+                qtys.append(int(round(float(q))))
+            except (TypeError, ValueError):
+                pass
+
+    children = order.get("childOrderStrategies", []) or []
+    if children:
+        for child in children:
+            _collect(child)
+    else:
+        _collect(order)
+    qtys = [q for q in qtys if q > 0]
+    return max(qtys) if qtys else None
+
+
+async def resolve_replace_qty(
+    engine: "TradingEngineWithCommentary",
+    position: "Position",
+    bracket_id: str,
+) -> tuple:
+    """v-live-scale-out-gate-2026-11-11: decide the share count for a
+    trail-replace OCO BEFORE anything is cancelled.
+
+    Returns ``(qty, None, broker_qty)`` to proceed, or
+    ``(None, skip_reason, broker_qty)`` to leave the existing working OCO
+    untouched (fail closed). ``broker_qty`` is None when not read.
+
+    Rules (LIVE + BRACKET_REPLACE_BROKER_QTY_GUARD on):
+      * non-long position            → skip ``short_replace_not_supported``
+        (the replacement legs below are SELL-only; a SELL OCO on a short
+        would add to the short instead of protecting it)
+      * broker qty unreadable        → skip ``broker_qty_unavailable``
+      * broker flat / opposite side  → skip ``broker_flat_or_wrong_side``
+        (the broker-flat handlers own that case; don't touch orders here)
+      * broker qty <= local qty      → size to broker qty (can't protect
+        more than is held; local synced down)
+      * broker qty  > local qty      → local may be desynced (SMCI) OR the
+        account holds extra manual shares in the same symbol. Size to
+        ``min(broker, max(local, shares the old OCO protected))`` so we
+        never shrink protection below what the old OCO covered and never
+        grow it onto shares the bot never bracketed. If the old OCO's qty
+        can't be read → skip ``broker_qty_ambiguous``.
+
+    Otherwise (guard off, not LIVE, no client) → legacy: local qty.
+    """
+    from core.models import TradingMode
+
+    local_qty = int(position.quantity or 0)
+    if (not _broker_qty_guard_enabled()
+            or getattr(engine, "mode", None) != TradingMode.LIVE
+            or not getattr(engine, "schwab_client", None)):
+        return local_qty, None, None
+
+    if str(getattr(position, "side", "long")).lower() != "long":
+        return None, "short_replace_not_supported", None
+
+    broker_signed = await read_broker_position_qty(engine, position.symbol)
+    if broker_signed is None:
+        return None, "broker_qty_unavailable", None
+    if broker_signed <= 0:
+        return None, "broker_flat_or_wrong_side", broker_signed
+    broker_qty = int(broker_signed)
+
+    if broker_qty <= local_qty:
+        return broker_qty, None, broker_qty
+
+    protected = await read_bracket_protected_qty(engine, bracket_id)
+    if protected is None:
+        return None, "broker_qty_ambiguous", broker_qty
+    return min(broker_qty, max(local_qty, protected)), None, broker_qty
+
+
 async def replace_bracket_with_new_stop(
     engine: "TradingEngineWithCommentary",
     position: "Position",
@@ -156,6 +267,34 @@ async def replace_bracket_with_new_stop(
 
     if not bracket_id:
         return
+
+    # v-live-scale-out-gate-2026-11-11: size from BROKER qty, decided
+    # BEFORE the cancel. If we can't size safely, keep the old OCO working
+    # (an older/looser stop on every share beats a tighter stop on half).
+    local_qty = int(position.quantity or 0)
+    replace_qty, skip_reason, broker_qty = await resolve_replace_qty(
+        engine, position, bracket_id,
+    )
+    if skip_reason is not None or not replace_qty or replace_qty <= 0:
+        skip_reason = skip_reason or "replace_qty_zero"
+        logger.warning(
+            "bracket_replace_skipped symbol=%s reason=%s local_qty=%d — "
+            "existing OCO %s left in place",
+            symbol, skip_reason, local_qty, bracket_id,
+        )
+        engine._audit(
+            "order_monitor", symbol, "bracket_replace_skipped", skip_reason,
+            bracket_id=bracket_id, local_qty=local_qty, broker_qty=broker_qty,
+            new_stop=round(float(new_stop), 4),
+        )
+        return
+    if replace_qty != local_qty:
+        engine._audit(
+            "order_monitor", symbol, "qty_desync", "replace_sized_to_broker",
+            local_qty=local_qty, broker_qty=broker_qty, replace_qty=replace_qty,
+            delta=local_qty - replace_qty, bracket_id=bracket_id,
+        )
+        position.quantity = replace_qty
 
     engine.commentary.add_commentary(TradingCommentary(
         timestamp=datetime.now(),
@@ -211,14 +350,14 @@ async def replace_bracket_with_new_stop(
         # Create new TP order
         take_profit_order = equity_sell_limit(
             symbol,
-            position.quantity,
+            replace_qty,
             tp_price
         ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
 
         # Create new stop order with updated price
         stop_loss_order = (equity_sell_limit(
             symbol,
-            position.quantity,
+            replace_qty,
             new_stop * 0.995  # Limit slightly below stop
         ).set_order_type(OrderType.STOP_LIMIT)
         .set_stop_price(new_stop)
@@ -244,6 +383,7 @@ async def replace_bracket_with_new_stop(
                 old_bracket_id=bracket_id,
                 new_bracket_id=new_order_id,
                 new_stop=round(new_stop, 4),
+                qty=replace_qty,
             )
 
             engine.commentary.add_commentary(TradingCommentary(
@@ -828,6 +968,36 @@ async def handle_bracket_rejected(
     await re_bracket_position(engine, position)
 
 
+async def _rebracket_broker_qty(
+    engine: "TradingEngineWithCommentary",
+    symbol: str,
+    local_qty: int,
+) -> Optional[int]:
+    """v-live-scale-out-gate-2026-11-11: broker qty for re_bracket_position.
+
+    Guard on (default): error-aware read. The legacy
+    check_broker_position_qty returns 0 on ANY read error, which sent a
+    transient Schwab hiccup down the broker-flat path (clear managed_by_bot
+    + cancel exit orders). Unknown ≠ flat: return None so the caller aborts
+    this attempt (software exits remain; the monitor retries next cycle).
+    Guard off: legacy check_broker_position_qty.
+    """
+    if not _broker_qty_guard_enabled():
+        return await check_broker_position_qty(engine, symbol)
+    signed = await read_broker_position_qty(engine, symbol)
+    if signed is None:
+        logger.warning(
+            "re_bracket_aborted_broker_qty_unavailable symbol=%s local_qty=%d",
+            symbol, local_qty,
+        )
+        engine._audit(
+            "order_monitor", symbol, "re_bracket_aborted",
+            "broker_qty_unavailable", local_qty=local_qty,
+        )
+        return None
+    return abs(signed)
+
+
 async def re_bracket_position(
     engine: "TradingEngineWithCommentary",
     position: "Position",
@@ -852,8 +1022,12 @@ async def re_bracket_position(
     # Verify position qty at broker before placing bracket.
     # If broker_qty != local_qty, sync local to broker truth.
     if engine.mode == TradingMode.LIVE and engine.schwab_client:
-        broker_qty = await check_broker_position_qty(engine, symbol)
         local_qty = position.quantity
+        # v-live-scale-out-gate-2026-11-11: error-aware wrapper around
+        # check_broker_position_qty — None = unreadable → abort (unknown ≠ flat)
+        broker_qty = await _rebracket_broker_qty(engine, symbol, local_qty)
+        if broker_qty is None:
+            return
 
         if broker_qty == 0:
             logger.warning(

@@ -3869,10 +3869,14 @@ class TradingEngineWithCommentary:
             # still pledges the full size. Gated until partial closes
             # are implemented end-to-end (cancel → sell → verify →
             # re-bracket). Audited so the gap stays visible.
-            if (self.mode == TradingMode.LIVE
-                    and not Config().ENABLE_LIVE_SCALE_OUT):
+            # v-live-scale-out-gate-2026-11-11: guard shared with the
+            # manage-positions mirror via _live_scale_out_block_reason()
+            # (mode LIVE or position.mode == "live", and
+            # ENABLE_LIVE_SCALE_OUT off).
+            _so_block = self._live_scale_out_block_reason(position)
+            if _so_block is not None:
                 self._audit("scale_out", symbol, "scale_out_skipped",
-                            "live_partials_not_armed")
+                            _so_block)
                 _so_override = None
             else:
                 # v-oversold-v2-2026-05-19: per-position activation
@@ -4047,6 +4051,34 @@ class TradingEngineWithCommentary:
         """Delegate to brackets.refresh_bracket_child_ids()."""
         from core.order_monitor.brackets import refresh_bracket_child_ids
         await refresh_bracket_child_ids(self, position, orders_by_id, all_working_orders)
+
+    def _live_scale_out_block_reason(self, position=None) -> Optional[str]:
+        """v-live-scale-out-gate-2026-11-11: single guard for BOTH +1R
+        scale-out paths (position loop and the manage-positions "sim-path
+        mirror"). The scale-out block is bookkeeping-only — it never places
+        a sell — so on a live position it would desync local qty from
+        Schwab. Returns a skip reason, or None when the bookkeeping may run.
+
+        Blocked when the engine is LIVE *or* the position itself is tagged
+        mode="live" (belt and braces), unless ENABLE_LIVE_SCALE_OUT is on.
+        Simulation / paper positions are never blocked.
+        """
+        is_live = (self.mode == TradingMode.LIVE
+                   or str(getattr(position, "mode", "") or "").lower() == "live")
+        if is_live and not Config().ENABLE_LIVE_SCALE_OUT:
+            return "live_partials_not_armed"
+        return None
+
+    def _audit_scale_out_skipped_once(self, symbol: str, reason: str,
+                                      path: str) -> None:
+        """Audit a live scale-out skip once per (symbol, path, reason) per
+        process so the manage loop (runs every tick) doesn't flood the log."""
+        seen = self.__dict__.setdefault("_scale_out_skip_audited", set())
+        key = (symbol, path, reason)
+        if key in seen:
+            return
+        seen.add(key)
+        self._audit("scale_out", symbol, "scale_out_skipped", reason, path=path)
 
     async def _check_trail_replace(self, position, parent_order: dict) -> None:
         """Delegate to brackets.check_trail_replace()."""
@@ -8941,14 +8973,28 @@ class TradingEngineWithCommentary:
                         # --- 1R Partial Exit ---
                         partial = None
                         if is_exit_rule_allowed(_state, ExitRule.SCALE_OUT_1R):
-                            # v-oversold-v2-2026-05-19: per-position override
-                            # (sim-path mirror of the live-path block above).
-                            _so_override_s = (getattr(position, 'reasoning', {}) or {}).get(
-                                'scale_out_r_override', 1.0,
-                            )
-                            partial = self.scale_trail.check_partial_exit_at_r(
-                                position, current_price, activation_r=_so_override_s,
-                            )
+                            # v-live-scale-out-gate-2026-11-11: this "sim-path
+                            # mirror" also runs on LIVE positions (positions_to_check
+                            # is self.positions in LIVE). It is BOOKKEEPING-ONLY —
+                            # no sell is placed — so in live it cut local qty
+                            # (SMCI 73→37 at 10:43:49 ET) while Schwab still held
+                            # 73, and the next bracket replace undersized the OCO.
+                            # Same guard as the position-loop path
+                            # (_live_scale_out_block_reason): skip + audit.
+                            _so_block_s = self._live_scale_out_block_reason(position)
+                            if _so_block_s is not None:
+                                self._audit_scale_out_skipped_once(
+                                    symbol, _so_block_s, path="manage_positions",
+                                )
+                            else:
+                                # v-oversold-v2-2026-05-19: per-position override
+                                # (sim-path mirror of the live-path block above).
+                                _so_override_s = (getattr(position, 'reasoning', {}) or {}).get(
+                                    'scale_out_r_override', 1.0,
+                                )
+                                partial = self.scale_trail.check_partial_exit_at_r(
+                                    position, current_price, activation_r=_so_override_s,
+                                )
                         if partial is not None and partial.exit_qty > 0:
                             position.quantity -= partial.exit_qty
                             position.scaled_out = True

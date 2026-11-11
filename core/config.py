@@ -1592,6 +1592,29 @@ class Config:
         return bool(self.manager.get('trading.enable_live_scale_out', False))
 
     @property
+    def BRACKET_REPLACE_BROKER_QTY_GUARD(self) -> bool:
+        """v-live-scale-out-gate-2026-11-11. When True (default), the
+        trail-replace path (order_monitor.brackets.replace_bracket_with_new_stop)
+        reads the symbol's quantity from Schwab BEFORE cancelling the working
+        OCO and sizes the replacement from it instead of trusting the local
+        position.quantity (which the bookkeeping-only scale-out could desync —
+        SMCI 2026-11-11: local 37 vs broker 73 → 36 shares left naked). If the
+        broker qty cannot be read, or is ambiguous, the old OCO is LEFT IN
+        PLACE (fail closed). Also makes re_bracket_position abort on a broker
+        read error instead of treating the error as "flat".
+
+        False = legacy behaviour (size from local qty; read error == flat).
+        Kill switch only — keep True.
+
+        Env BRACKET_REPLACE_BROKER_QTY_GUARD (1/true/yes/on | 0/false/no/off)
+        > yaml trading.bracket_replace_broker_qty_guard > True.
+        """
+        env_val = os.getenv("BRACKET_REPLACE_BROKER_QTY_GUARD")
+        if env_val is not None and env_val.strip():
+            return env_val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.bracket_replace_broker_qty_guard', True))
+
+    @property
     def ENABLE_REGIME_ALLOCATOR_SHADOW(self) -> bool:
         """v-regime-allocator-shadow-2026-06-10 (roadmap P1). When True,
         every signal routed through the engine gets a shadow allocation
