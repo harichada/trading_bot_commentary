@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -99,6 +100,10 @@ class CriticCard:
     news_age_sec: float = 0.0
     source: str = ""
     symbol: str = ""
+    # v-themeshock-ailab-reroute-2026-11-16: populated ONLY when the matching
+    # flag is on (None otherwise -> to_dict() is byte-identical to before).
+    reroute_diag: Optional[Dict[str, Any]] = None
+    contam_diag: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict:
         """Serialize for structured logging.
@@ -107,7 +112,7 @@ class CriticCard:
         theme_probs, relevance_by_symbol, stance, contamination_risk,
         confidence, rationale_short, keyword_match (with matched_text+matched_field).
         """
-        return {
+        d = {
             "event_id": self.event_id,
             "headline": self.headline[:100] if self.headline else "",
             "summary": self.summary[:200] if self.summary else "",
@@ -133,6 +138,11 @@ class CriticCard:
             "source": self.source,
             "symbol": self.symbol,
         }
+        if self.reroute_diag is not None:
+            d.update(self.reroute_diag)
+        if self.contam_diag is not None:
+            d.update(self.contam_diag)
+        return d
 
 
 THEME_DESCRIPTIONS = {
@@ -159,6 +169,183 @@ STANCE_DESCRIPTORS = {
     Stance.MIXED: "uncertain, mixed signals, both positive and negative aspects",
     Stance.IRRELEVANT: "not relevant to market trading decisions",
 }
+
+
+# ---------------------------------------------------------------------------
+# v-themeshock-ailab-reroute-2026-11-16 (Research 11/16 weekly rollup)
+#
+# Pure, config-free helpers so the golden-set replay can call exactly the
+# same logic the critic runs. All are gated by default-False flags at the
+# call sites; with every flag off the critic output is unchanged.
+# ---------------------------------------------------------------------------
+
+AILAB_RE = re.compile(
+    r"\b(anthropic|openai|open ai|xai|x\.ai|mistral(?: ai)?|cohere|perplexity|"
+    r"deepseek|safe superintelligence|thinking machines(?: lab)?|scale ai|"
+    r"inflection ai|character\.ai)\b",
+    re.IGNORECASE,
+)
+ANTHROPIC_RE = re.compile(r"\b(anthropic|amodei|claude)\b", re.IGNORECASE)
+
+AILAB_FINANCING_RE = re.compile(
+    r"\b(ipos?|s-1|f-1|prospectus|go(?:es|ing)? public|files? (?:confidentially )?"
+    r"(?:to go public|for (?:an? )?ipo)|public (?:offering|debut|listing)|"
+    r"raise[sd]?|raising|fundrais\w*|funding(?: rounds?)?|financing|"
+    r"series [a-h]|valuations?|valued at|valuing|stakes?|invests?|invested|investing|"
+    r"investments?|investors?|tender offers?|share sale|secondary sale|loans?|lends?|lent)\b",
+    re.IGNORECASE,
+)
+
+EARNINGS_TERM_RE = re.compile(
+    r"\b(eps|earnings|quarterly (?:results|report|revenue|sales|loss|profit)|"
+    r"q[1-4] (?:results|earnings|revenue|sales|financials|net (?:loss|income)|loss|profit)|"
+    r"reports? q[1-4]|fiscal (?:q[1-4]|quarter)|"
+    r"(?:revenue|sales|earnings|profit) (?:beats?|miss(?:es)?|tops?)|"
+    r"beats? (?:on|estimates|expectations|forecasts?)|miss(?:es)? (?:on|estimates|expectations|forecasts?)|"
+    r"guidance|net (?:loss|income) of)\b",
+    re.IGNORECASE,
+)
+
+OPTICAL_PRODUCT_RE = re.compile(
+    r"\b(dci|data[- ]?center interconnects?|interconnects?|open line systems?|"
+    r"transceivers?|optical (?:modules?|transceivers?|networking|network|interconnects?|"
+    r"systems?|engines?|platforms?|components?|links?|innovations?)|coherent optics|"
+    r"co-packaged optics|pluggables?|silicon photonics|photonics|data optics)\b",
+    re.IGNORECASE,
+)
+# Word-boundary vendor names (avoids 'cien' in 'efficiency'/'scientific').
+OPTICAL_NAME_RE = re.compile(
+    r"\b(cohr|coherent corp|coherent|cien|ciena|aaoi|applied optoelectronics|"
+    r"lumentum|infinera|corning|glw)\b",
+    re.IGNORECASE,
+)
+# Plain oil, word-boundary: oil/oils/oilfield(s). NOT toil/boil/soil/spoil.
+PLAIN_OIL_RE = re.compile(r"\b(oil|oils|oilfield|oilfields)\b", re.IGNORECASE)
+
+REROUTE_FROM_THEME = "earnings_chip"
+REROUTE_TO_THEME = "ai_compute"
+
+
+def _top_theme(theme_probs: Dict[str, float]) -> str:
+    return max(theme_probs, key=theme_probs.get) if theme_probs else "none"
+
+
+def ailab_financing_reroute(
+    headline: str,
+    theme_probs: Dict[str, float],
+    enabled: bool,
+    second_choice_min_prob: float = 0.0,
+) -> Tuple[Dict[str, float], Optional[Dict[str, Any]]]:
+    """Re-route earnings_chip -> ai_compute for AI-lab financing headlines.
+
+    Returns (theme_probs, diag). When ``enabled`` is False returns the input
+    dict object unchanged and diag=None (off-path is identical).
+
+    When enabled, diag is ALWAYS returned (every row) with:
+      original_theme, rerouted_theme, reroute_reason, rerouted_sub_theme,
+      reroute_ailab, reroute_financing_term, reroute_earnings_term,
+      theme_probs_original (only when rerouted).
+
+    Re-route = swap the earnings_chip and ai_compute probabilities so
+    ai_compute becomes top while the distribution is otherwise preserved.
+    """
+    if not enabled:
+        return theme_probs, None
+    original = _top_theme(theme_probs)
+    hl = headline or ""
+    lab = AILAB_RE.search(hl)
+    fin = AILAB_FINANCING_RE.search(hl)
+    earn = EARNINGS_TERM_RE.search(hl)
+    diag: Dict[str, Any] = {
+        "original_theme": original,
+        "rerouted_theme": original,
+        "reroute_reason": None,
+        "rerouted_sub_theme": None,
+        "reroute_ailab": lab.group(0).lower() if lab else None,
+        "reroute_financing_term": fin.group(0).lower() if fin else None,
+        "reroute_earnings_term": earn.group(0).lower() if earn else None,
+    }
+    if original != REROUTE_FROM_THEME or REROUTE_TO_THEME not in theme_probs:
+        return theme_probs, diag
+    if earn:
+        diag["reroute_reason"] = "blocked_earnings_term"
+        return theme_probs, diag
+
+    reason = None
+    if lab and fin:
+        reason = "ailab_financing"
+    elif second_choice_min_prob and second_choice_min_prob > 0:
+        ranked = sorted(theme_probs, key=theme_probs.get, reverse=True)
+        if (
+            len(ranked) >= 2
+            and ranked[1] == REROUTE_TO_THEME
+            and theme_probs[REROUTE_TO_THEME] >= second_choice_min_prob
+        ):
+            reason = "second_choice_ai_compute"
+    if reason is None:
+        return theme_probs, diag
+
+    new_probs = dict(theme_probs)
+    new_probs[REROUTE_TO_THEME], new_probs[REROUTE_FROM_THEME] = (
+        theme_probs[REROUTE_FROM_THEME], theme_probs[REROUTE_TO_THEME],
+    )
+    diag["rerouted_theme"] = REROUTE_TO_THEME
+    diag["reroute_reason"] = reason
+    diag["rerouted_sub_theme"] = "anthropic" if ANTHROPIC_RE.search(hl) else None
+    diag["theme_probs_original"] = dict(theme_probs)
+    return new_probs, diag
+
+
+def optical_interconnect_guard_hit(headline: str, summary: str = "") -> Optional[str]:
+    """Return a reason string when the item is optical-vendor / optical
+    interconnect product news (policy: optical -> FP), else None."""
+    hl = headline or ""
+    m = OPTICAL_NAME_RE.search(hl)
+    if m:
+        return f"optical_name_headline:{m.group(0).lower()}"
+    p = OPTICAL_PRODUCT_RE.search(hl)
+    if p:
+        n = OPTICAL_NAME_RE.search(f"{hl} {summary or ''}")
+        if n:
+            return f"optical_product:{p.group(0).lower()}+name:{n.group(0).lower()}"
+    return None
+
+
+def contam_lexicon_decision(
+    headline: str,
+    summary: str,
+    current_risk: float,
+    lexicon: List[str],
+    ai_triggers: List[str],
+    optical_guard: bool = False,
+    plain_oil: bool = False,
+) -> Tuple[float, Optional[str]]:
+    """Lexicon contamination bump (v-book-b-contam-lexicon-2026-09-17) with the
+    two optional 2026-11-16 extensions. With both extensions False this is
+    exactly the legacy _apply_contam_lexicon logic. Returns (risk, reason)."""
+    headline_lower = (headline or "").lower()
+    summary_lower = (summary or "").lower()
+    text_lower = f"{headline_lower} {summary_lower}"
+
+    reason = None
+    has_lexicon_hit = any(token.lower() in text_lower for token in lexicon)
+    if has_lexicon_hit:
+        reason = "lexicon"
+    if not has_lexicon_hit and plain_oil and PLAIN_OIL_RE.search(text_lower):
+        has_lexicon_hit, reason = True, "plain_oil"
+    guard_reason = optical_interconnect_guard_hit(headline, summary) if optical_guard else None
+    if not has_lexicon_hit and guard_reason:
+        has_lexicon_hit, reason = True, "optical_guard_name"
+    if not has_lexicon_hit:
+        return current_risk, None
+
+    headline_has_ai_trigger = any(t in headline_lower for t in ai_triggers)
+    if headline_has_ai_trigger:
+        if guard_reason:
+            return max(current_risk, 0.65), f"optical_guard:{guard_reason}"
+        return current_risk, "ai_trigger_exempt"
+
+    return max(current_risk, 0.65), reason
 
 
 class GPUNewsCriticModel:
@@ -261,8 +448,12 @@ class GPUNewsCriticModel:
         headline: str,
         summary: str,
         keyword_match: Optional[KeywordMatch] = None,
+        diag: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, float], Dict[str, float], Stance, float, float, str]:
         """Score a news item.
+
+        ``diag`` (optional dict) receives reroute/contam diagnostics when the
+        2026-11-16 flags are on; untouched when they are off.
         
         Returns:
             theme_probs: dict of theme_id -> probability
@@ -272,11 +463,19 @@ class GPUNewsCriticModel:
             confidence: 0-1
             rationale_short: brief explanation
         """
-        import torch
-
         text = f"{headline} {summary}".strip()
         if not text:
             return {}, {}, Stance.IRRELEVANT, 0.0, 0.0, "empty_text"
+
+        theme_probs, best_stance, stance_confidence = self._embed_scores(text)
+        return self._score_from_probs(
+            headline, summary, keyword_match,
+            theme_probs, best_stance, stance_confidence, diag,
+        )
+
+    def _embed_scores(self, text: str) -> Tuple[Dict[str, float], Stance, float]:
+        """Embedding similarity -> (theme_probs, best_stance, stance_confidence)."""
+        import torch
 
         text_embedding = self._model.encode(
             text, convert_to_tensor=True, normalize_embeddings=True
@@ -302,6 +501,28 @@ class GPUNewsCriticModel:
 
         best_stance = max(stance_scores, key=stance_scores.get)
         stance_confidence = (stance_scores[best_stance] + 1) / 2
+        return theme_probs, best_stance, stance_confidence
+
+    def _score_from_probs(
+        self,
+        headline: str,
+        summary: str,
+        keyword_match: Optional[KeywordMatch],
+        theme_probs: Dict[str, float],
+        best_stance: Stance,
+        stance_confidence: float,
+        diag: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, float], Dict[str, float], Stance, float, float, str]:
+        """Pure post-embedding scoring (no torch). Unchanged when flags off."""
+        from core.config import Config
+        cfg = Config()
+        if cfg.THEME_CRITIC_AILAB_FINANCING_REROUTE:
+            theme_probs, rdiag = ailab_financing_reroute(
+                headline, theme_probs, True,
+                cfg.THEME_CRITIC_AILAB_SECOND_CHOICE_MIN_PROB,
+            )
+            if diag is not None and rdiag is not None:
+                diag["reroute"] = rdiag
 
         relevance_by_symbol = {}
         top_theme = max(theme_probs, key=theme_probs.get)
@@ -312,7 +533,7 @@ class GPUNewsCriticModel:
                 relevance_by_symbol[symbol] = top_theme_prob * 0.8
 
         contamination_risk = self._compute_contamination_risk(
-            headline, summary, theme_probs, keyword_match
+            headline, summary, theme_probs, keyword_match, diag=diag
         )
 
         confidence = (top_theme_prob + stance_confidence) / 2
@@ -328,6 +549,11 @@ class GPUNewsCriticModel:
         if keyword_match:
             rationale_parts.append(
                 f"kw_match={keyword_match.theme_id}:{keyword_match.matched_field}"
+            )
+        rd = (diag or {}).get("reroute")
+        if rd and rd.get("rerouted_theme") != rd.get("original_theme"):
+            rationale_parts.append(
+                f"reroute={rd['original_theme']}->{rd['rerouted_theme']}({rd['reroute_reason']})"
             )
         rationale_short = "; ".join(rationale_parts)
 
@@ -360,6 +586,7 @@ class GPUNewsCriticModel:
         summary: str,
         theme_probs: Dict[str, float],
         keyword_match: Optional[KeywordMatch],
+        diag: Optional[Dict[str, Any]] = None,
     ) -> float:
         """Compute contamination risk score.
         
@@ -406,7 +633,7 @@ class GPUNewsCriticModel:
                 if theme_probs[top_theme] > theme_probs[keyword_match.theme_id] + 0.15:
                     risk += 0.25
 
-        risk = self._apply_contam_lexicon(headline, summary, risk)
+        risk = self._apply_contam_lexicon(headline, summary, risk, diag=diag)
 
         return min(1.0, risk)
 
@@ -415,6 +642,7 @@ class GPUNewsCriticModel:
         headline: str,
         summary: str,
         current_risk: float,
+        diag: Optional[Dict[str, Any]] = None,
     ) -> float:
         """Apply lexicon-based contamination detection.
 
@@ -433,6 +661,29 @@ class GPUNewsCriticModel:
         lexicon = cfg.GPU_CRITIC_CONTAM_LEXICON
         if not lexicon:
             return current_risk
+
+        optical_guard = cfg.THEME_CRITIC_OPTICAL_INTERCONNECT_GUARD
+        plain_oil = cfg.THEME_CRITIC_CONTAM_PLAIN_OIL
+        if optical_guard or plain_oil:
+            # v-themeshock-ailab-reroute-2026-11-16: log pre- and post-guard.
+            pre, pre_reason = contam_lexicon_decision(
+                headline, summary, current_risk, lexicon, self.AI_COMPUTE_TRIGGERS,
+            )
+            post, post_reason = contam_lexicon_decision(
+                headline, summary, current_risk, lexicon, self.AI_COMPUTE_TRIGGERS,
+                optical_guard=optical_guard, plain_oil=plain_oil,
+            )
+            if diag is not None:
+                diag["contam"] = {
+                    "contam_risk_pre_guard": min(1.0, pre),
+                    "contam_risk_post_guard": min(1.0, post),
+                    "contam_guard_reason": post_reason if post != pre else None,
+                    "contam_lexicon_reason_pre": pre_reason,
+                    "contam_lexicon_reason_post": post_reason,
+                    "contam_optical_guard_on": bool(optical_guard),
+                    "contam_plain_oil_on": bool(plain_oil),
+                }
+            return post
 
         headline_lower = headline.lower()
         summary_lower = summary.lower()
@@ -503,6 +754,7 @@ class FakeCritic:
         headline: str,
         summary: str,
         keyword_match: Optional[KeywordMatch] = None,
+        diag: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, float], Dict[str, float], Stance, float, float, str]:
         """Deterministic scoring for tests."""
         headline_lower = headline.lower()
@@ -596,6 +848,16 @@ class FakeCritic:
                     if "summary-only keyword match" not in rationale:
                         rationale += "; summary-only keyword match with low theme_prob"
 
+        if diag is not None:
+            from core.config import Config
+            cfg = Config()
+            if cfg.THEME_CRITIC_AILAB_FINANCING_REROUTE:
+                theme_probs, rdiag = ailab_financing_reroute(
+                    headline, theme_probs, True,
+                    cfg.THEME_CRITIC_AILAB_SECOND_CHOICE_MIN_PROB,
+                )
+                diag["reroute"] = rdiag
+
         return (
             theme_probs,
             relevance,
@@ -686,10 +948,11 @@ class GPUNewsCritic:
         event_id = self._make_event_id(headline)
 
         start_ms = time.time() * 1000
+        diag: Dict[str, Any] = {}
 
         if self._use_fake:
             theme_probs, relevance, stance, contam_risk, confidence, rationale = (
-                self._fake_critic.score(headline, summary, keyword_match)
+                self._fake_critic.score(headline, summary, keyword_match, diag=diag)
             )
         else:
             model = self._get_model()
@@ -703,7 +966,7 @@ class GPUNewsCritic:
 
             try:
                 theme_probs, relevance, stance, contam_risk, confidence, rationale = (
-                    model.score(headline, summary, keyword_match)
+                    model.score(headline, summary, keyword_match, diag=diag)
                 )
             except Exception as e:
                 logger.debug("gpu_news_critic score error: %s", e)
@@ -740,6 +1003,8 @@ class GPUNewsCritic:
             news_age_sec=news_age_sec,
             source=source,
             symbol=symbol,
+            reroute_diag=diag.get("reroute"),
+            contam_diag=diag.get("contam"),
         )
 
         self._emit_shadow_log(card, item)
@@ -804,6 +1069,20 @@ class GPUNewsCritic:
         kw_info = ""
         if card.keyword_match:
             kw_info = f" kw={card.keyword_match.theme_id}:{card.keyword_match.matched_field}:{card.keyword_match.matched_text[:20]}"
+        if card.reroute_diag is not None:
+            rd = card.reroute_diag
+            kw_info += (
+                f" original_theme={rd.get('original_theme')}"
+                f" rerouted_theme={rd.get('rerouted_theme')}"
+                f" reroute_reason={rd.get('reroute_reason')}"
+            )
+        if card.contam_diag is not None:
+            cd = card.contam_diag
+            kw_info += (
+                f" contam_pre={cd.get('contam_risk_pre_guard', 0.0):.2f}"
+                f" contam_post={cd.get('contam_risk_post_guard', 0.0):.2f}"
+                f" contam_guard={cd.get('contam_guard_reason')}"
+            )
 
         logger.info(
             "gpu_news_critic "

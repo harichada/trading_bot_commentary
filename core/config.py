@@ -4181,6 +4181,77 @@ class Config:
         ]
         return self.manager.get('trading.gpu_critic_contam_lexicon', default_lexicon)
 
+    # ------------------------------------------------------------------
+    # v-themeshock-ailab-reroute-2026-11-16 (Research 11/16 weekly rollup).
+    # All default False / disabled. Shadow-only critic post-processing; they
+    # never touch THEME_HARD_SKIP_REQUIRE_GPU or any LIVE order path.
+    # Precedence: env (if set) > trading.<key> in yaml > default.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _themeshock_env_bool(name: str):
+        env_val = os.getenv(name)
+        if env_val is None:
+            return None
+        return env_val.strip().lower() in ("1", "true", "yes", "on")
+
+    @property
+    def THEME_CRITIC_AILAB_FINANCING_REROUTE(self) -> bool:
+        """Re-route GPU critic top theme earnings_chip -> ai_compute for AI-lab
+        financing headlines (Anthropic/OpenAI/xAI/... + IPO/S-1/raise/stake/...,
+        no real earnings term). Default False. Env
+        THEME_CRITIC_AILAB_FINANCING_REROUTE or
+        trading.theme_critic_ailab_financing_reroute.
+        """
+        v = self._themeshock_env_bool("THEME_CRITIC_AILAB_FINANCING_REROUTE")
+        if v is not None:
+            return v
+        return bool(self.manager.get('trading.theme_critic_ailab_financing_reroute', False))
+
+    @property
+    def THEME_CRITIC_AILAB_SECOND_CHOICE_MIN_PROB(self) -> float:
+        """Optional 2nd-choice reroute (only active when
+        THEME_CRITIC_AILAB_FINANCING_REROUTE is on): if top theme is
+        earnings_chip, no earnings term, and ai_compute is the critic's 2nd
+        choice with prob >= this value, re-route to ai_compute.
+        Default 0.0 = disabled. Env THEME_CRITIC_AILAB_SECOND_CHOICE_MIN_PROB or
+        trading.theme_critic_ailab_second_choice_min_prob.
+        """
+        env_val = os.getenv("THEME_CRITIC_AILAB_SECOND_CHOICE_MIN_PROB")
+        raw = env_val if env_val is not None else self.manager.get(
+            'trading.theme_critic_ailab_second_choice_min_prob', 0.0)
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def THEME_CRITIC_OPTICAL_INTERCONNECT_GUARD(self) -> bool:
+        """Keep optical-name contam lexicon suppression active when the headline
+        is about optical networking / interconnect products (DCI, open line
+        system, transceiver, optical module, coherent optics, ...) or names an
+        optical vendor, even when it also carries an AI trigger such as
+        'data center'. Default False. Env THEME_CRITIC_OPTICAL_INTERCONNECT_GUARD
+        or trading.theme_critic_optical_interconnect_guard. Requires
+        GPU_CRITIC_CONTAM_LEXICON_ENABLE.
+        """
+        v = self._themeshock_env_bool("THEME_CRITIC_OPTICAL_INTERCONNECT_GUARD")
+        if v is not None:
+            return v
+        return bool(self.manager.get('trading.theme_critic_optical_interconnect_guard', False))
+
+    @property
+    def THEME_CRITIC_CONTAM_PLAIN_OIL(self) -> bool:
+        """Add word-boundary plain 'oil' (oil/oils/oilfield/oilfields; not
+        toil/boil/spoil/soil) to the contam lexicon hit test. AI-trigger
+        exemption still applies. Default False. Env THEME_CRITIC_CONTAM_PLAIN_OIL
+        or trading.theme_critic_contam_plain_oil. Requires
+        GPU_CRITIC_CONTAM_LEXICON_ENABLE.
+        """
+        v = self._themeshock_env_bool("THEME_CRITIC_CONTAM_PLAIN_OIL")
+        if v is not None:
+            return v
+        return bool(self.manager.get('trading.theme_critic_contam_plain_oil', False))
+
     @property
     def ENABLE_ALPACA_NEWS_BUS(self) -> bool:
         """Enable Alpaca News publishing to NewsBus.
