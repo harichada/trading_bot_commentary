@@ -318,3 +318,89 @@ class TestModelPathEndToEnd:
         c = GPUNewsCritic(use_fake=True)
         card = c.score_news_item(_Item("Anthropic CEO warns about AI compute pace"))
         assert card.reroute_diag is None and "original_theme" not in card.to_dict()
+
+
+# ---------------------------------------------------------------- pre-shadow follow-ups (Research gate 11/16)
+class TestPreShadowFollowups:
+    # 1. bare 'coherent'
+    def test_coherent_ordinary_word_does_not_suppress_anthropic_tp(self):
+        hl = "Anthropic lays out coherent strategy for Claude enterprise push"
+        assert optical_interconnect_guard_hit(hl) is None
+        r, why = contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, optical_guard=True, plain_oil=True)
+        assert r == 0.0 and why is None
+
+    def test_coherent_pricing_not_guard_bumped(self):
+        hl = "Coherent pricing returns to AI chip market, says Nvidia CFO"
+        assert optical_interconnect_guard_hit(hl) is None
+        r, why = contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, optical_guard=True, plain_oil=True)
+        assert r < 0.65 and (why is None or not why.startswith("optical_guard"))
+
+    @pytest.mark.parametrize("hl", [
+        "Coherent (COHR) Launches AI Datacenter Optical System Now Shipping In Volume",  # d35ac6342b80
+        "Coherent Showcases Optical Innovations to Scale AI Infrastructure at ECOC 2026",  # 12ccd221717e
+        "3M Jumps 6% on Expanded Amazon Data Center Deal and Earnings Beat; Coherent Edges Higher, Corning",  # 50005b1b8370
+        "Coherent shares jump on AI data center transceiver demand",
+        "Coherent Corp. stock climbs as AI datacenter bets intensify",
+        "Coherent\u2019s stock slides after data center guidance",
+    ])
+    def test_coherent_vendor_in_context_still_guarded(self, hl):
+        assert optical_interconnect_guard_hit(hl) is not None
+        r, why = contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, optical_guard=True)
+        assert r >= 0.65 and why.startswith("optical_guard:")
+
+    def test_lowercase_coherent_with_price_word_not_vendor(self):
+        assert optical_interconnect_guard_hit("AI stocks rise on coherent data center plan") is None
+
+    # 2. plain oil + AI labs / oil-rich
+    def test_oil_rich_xai_not_suppressed(self):
+        hl = "Oil-rich Saudi fund invests in xAI"
+        r, why = contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, optical_guard=True, plain_oil=True)
+        assert r == 0.0
+        _, d = ailab_financing_reroute(hl, EC_TOP, True)
+        assert d["rerouted_theme"] == "ai_compute"
+
+    def test_oil_rich_alone_is_not_oil(self):
+        r, why = contam_lexicon_decision("Oil-rich Norway fund boosts tech holdings", "", 0.0, LEX, TRIG, plain_oil=True)
+        assert r == 0.0 and why is None
+
+    @pytest.mark.parametrize("hl", [
+        "Oil prices spike; xAI shrugs off energy costs",
+        "Perplexity CEO says oil shock won't slow AI spend",
+        "Mistral AI unfazed as oil jumps",
+    ])
+    def test_plain_oil_ai_lab_exempt(self, hl):
+        r, why = contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, plain_oil=True)
+        assert r == 0.0 and why == "ai_lab_exempt"
+
+    def test_mistral_wind_still_oil_contam(self):
+        r, why = contam_lexicon_decision("Mistral winds batter southern France; oil tanker delayed",
+                                         "", 0.0, LEX, TRIG, plain_oil=True)
+        assert r >= 0.65 and why == "plain_oil"
+
+    def test_legacy_lexicon_with_ai_lab_unchanged(self):
+        # exemption is plain-oil only; legacy crude-oil hit with xAI still suppresses (as before)
+        hl = "Crude oil jumps; xAI shares quiet"
+        assert contam_lexicon_decision(hl, "", 0.0, LEX, TRIG)[0] >= 0.65
+        assert contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, optical_guard=True, plain_oil=True)[0] >= 0.65
+
+    def test_xle_russian_oil_still_fixed(self):
+        for hl in (XLE_2AF0, RUSSIAN_4C46):
+            assert contam_lexicon_decision(hl, "", 0.0, LEX, TRIG, plain_oil=True)[0] >= 0.65
+
+    # 3. top-2 margin logged on every row
+    def test_top2_margin_every_row(self):
+        for hl in ("Anthropic IPO priced", "Nvidia beats on EPS, raises guidance", "Unrelated headline"):
+            _, d = ailab_financing_reroute(hl, EC_TOP, True)
+            assert d["theme_second"] == "ai_compute"
+            assert d["theme_top2_margin"] == pytest.approx(0.19 - 0.155)
+        _, d = ailab_financing_reroute("x", {"none": 1.0}, True)
+        assert d["theme_top2_margin"] is None and d["theme_second"] is None
+
+    def test_top2_margin_in_card_dict(self, monkeypatch):
+        monkeypatch.setenv("THEME_CRITIC_AILAB_FINANCING_REROUTE", "1")
+        d = _critic(EC_TOP).score_news_item(_Item("Anthropic IPO could top SpaceX")).to_dict()
+        assert d["theme_top2_margin"] == pytest.approx(0.035)
+
+    def test_top2_margin_absent_flag_off(self):
+        d = _critic(EC_TOP).score_news_item(_Item("Anthropic IPO could top SpaceX")).to_dict()
+        assert "theme_top2_margin" not in d

@@ -214,13 +214,39 @@ OPTICAL_PRODUCT_RE = re.compile(
     re.IGNORECASE,
 )
 # Word-boundary vendor names (avoids 'cien' in 'efficiency'/'scientific').
+# Bare 'coherent' is NOT here (ordinary English word); see _COHERENT_* below.
 OPTICAL_NAME_RE = re.compile(
-    r"\b(cohr|coherent corp|coherent|cien|ciena|aaoi|applied optoelectronics|"
+    r"\b(cohr|coherent corp|cien|ciena|aaoi|applied optoelectronics|"
     r"lumentum|infinera|corning|glw)\b",
     re.IGNORECASE,
 )
-# Plain oil, word-boundary: oil/oils/oilfield(s). NOT toil/boil/soil/spoil.
-PLAIN_OIL_RE = re.compile(r"\b(oil|oils|oilfield|oilfields)\b", re.IGNORECASE)
+# Bare 'Coherent' counts as the vendor only when capitalised AND either
+#  - immediately followed by Corp/Inc/stock/shares or a price-move word
+#    (optionally after "'s", "(COHR)" or a comma), or
+#  - the same headline has COHR or an optical product term.
+# Clears "Anthropic lays out coherent strategy" / "Coherent pricing returns ...".
+_COHERENT_CAP_RE = re.compile(r"\bCoherent\b")  # case-sensitive on purpose
+_PRICE_MOVE = (
+    r"jumps?|jumped|climbs?|climbed|rises?|rose|gains?|gained|rall(?:y|ies|ied)|"
+    r"surges?|surged|soars?|soared|pops?|popped|advances?|edges?|higher|lower|"
+    r"falls?|fell|drops?|dropped|slides?|slid|slips?|slipped|sinks?|sank|"
+    r"tumbles?|tumbled|plunges?|plunged|declines?|declined|sheds?|dips?|dipped|"
+    r"upgraded?|downgraded?|up|down"
+)
+_COHERENT_ADJ_RE = re.compile(
+    r"\bCoherent(?:'s|\u2019s)?\s*(?:\(\s*(?:nyse:\s*)?cohr\s*\))?\s*,?\s*"
+    r"(?:corp(?:oration)?\b|inc\b|stock\b|shares\b|(?:" + _PRICE_MOVE + r")\b)",
+    re.IGNORECASE,
+)
+_COHR_RE = re.compile(r"\bcohr\b", re.IGNORECASE)
+# Plain oil, word-boundary: oil/oils/oilfield(s). NOT toil/boil/soil/spoil,
+# NOT 'oil-rich' (sovereign-wealth context, not an energy story).
+PLAIN_OIL_RE = re.compile(r"\b(oil|oils|oilfield|oilfields)\b(?!-rich)", re.IGNORECASE)
+# AI-lab exemption for plain-oil hits: same labs as AILAB_RE, except bare
+# 'mistral' (the wind) must be 'Mistral AI'.
+AILAB_OIL_EXEMPT_RE = re.compile(
+    AILAB_RE.pattern.replace(r"mistral(?: ai)?", r"mistral ai"), re.IGNORECASE
+)
 
 REROUTE_FROM_THEME = "earnings_chip"
 REROUTE_TO_THEME = "ai_compute"
@@ -265,6 +291,11 @@ def ailab_financing_reroute(
         "reroute_financing_term": fin.group(0).lower() if fin else None,
         "reroute_earnings_term": earn.group(0).lower() if earn else None,
     }
+    ranked = sorted(theme_probs, key=theme_probs.get, reverse=True)
+    diag["theme_second"] = ranked[1] if len(ranked) >= 2 else None
+    diag["theme_top2_margin"] = (
+        float(theme_probs[ranked[0]] - theme_probs[ranked[1]]) if len(ranked) >= 2 else None
+    )
     if original != REROUTE_FROM_THEME or REROUTE_TO_THEME not in theme_probs:
         return theme_probs, diag
     if earn:
@@ -296,18 +327,34 @@ def ailab_financing_reroute(
     return new_probs, diag
 
 
+def _optical_vendor(text: str) -> Optional[str]:
+    """Optical vendor named in ``text`` (original case), or None."""
+    if not text:
+        return None
+    m = OPTICAL_NAME_RE.search(text)
+    if m:
+        return m.group(0).lower()
+    if _COHERENT_CAP_RE.search(text) and (
+        _COHERENT_ADJ_RE.search(text)
+        or _COHR_RE.search(text)
+        or OPTICAL_PRODUCT_RE.search(text)
+    ):
+        return "coherent(ctx)"
+    return None
+
+
 def optical_interconnect_guard_hit(headline: str, summary: str = "") -> Optional[str]:
     """Return a reason string when the item is optical-vendor / optical
     interconnect product news (policy: optical -> FP), else None."""
     hl = headline or ""
-    m = OPTICAL_NAME_RE.search(hl)
+    m = _optical_vendor(hl)
     if m:
-        return f"optical_name_headline:{m.group(0).lower()}"
+        return f"optical_name_headline:{m}"
     p = OPTICAL_PRODUCT_RE.search(hl)
     if p:
-        n = OPTICAL_NAME_RE.search(f"{hl} {summary or ''}")
+        n = _optical_vendor(f"{hl} {summary or ''}")
         if n:
-            return f"optical_product:{p.group(0).lower()}+name:{n.group(0).lower()}"
+            return f"optical_product:{p.group(0).lower()}+name:{n}"
     return None
 
 
@@ -344,6 +391,10 @@ def contam_lexicon_decision(
         if guard_reason:
             return max(current_risk, 0.65), f"optical_guard:{guard_reason}"
         return current_risk, "ai_trigger_exempt"
+    if reason == "plain_oil" and AILAB_OIL_EXEMPT_RE.search(headline or ""):
+        # plain-oil only: AI-lab headlines (xAI, Perplexity, ...) are exempt
+        # like the legacy AI triggers. Legacy lexicon hits are unchanged.
+        return current_risk, "ai_lab_exempt"
 
     return max(current_risk, 0.65), reason
 
