@@ -19,13 +19,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from backtest.engine import compute_indicators
+from backtest.engine import DEFAULT_DSN, compute_indicators
 from backtest.metrics import summarize
 from backtest.trades import Trade
 
 logger = logging.getLogger("backtest.scalp_reversal")
-
-DEFAULT_DSN = "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
 DEFAULT_SYMBOLS = ["NVDA", "TSLA", "AMD", "QQQ", "SMCI", "IREN", "MU"]
 CAPITAL_USD = 100_000
 MAX_SLOTS = 10
@@ -206,8 +204,8 @@ def replay_symbol_scalp(
                 ))
                 open_short = None
 
-        # --- Skip signal check during first-15-bar window ---
-        if day_bar_count[bar_date] <= 15:
+        # --- Skip signal check during first-15-bar window OR last bar of session ---
+        if day_bar_count[bar_date] <= 15 or is_last_bar_of_day:
             continue
 
         atr = float(indicators["atr"])
@@ -358,9 +356,22 @@ def run(
         for r in all_reasons
     }
 
+    def _patch_exit_bd(m: dict, side_trades: list[Trade]) -> dict:
+        n = len(side_trades)
+        m["exit_breakdown"]["quick_profit"] = round(
+            100 * sum(1 for t in side_trades if t.exit_reason == "quick_profit") / n, 1
+        ) if n else 0.0
+        return m
+
     by_side = {
-        "long": summarize([t for t in executed if t.side == "long"]),
-        "short": summarize([t for t in executed if t.side == "short"]),
+        "long": _patch_exit_bd(
+            summarize([t for t in executed if t.side == "long"]),
+            [t for t in executed if t.side == "long"],
+        ),
+        "short": _patch_exit_bd(
+            summarize([t for t in executed if t.side == "short"]),
+            [t for t in executed if t.side == "short"],
+        ),
     }
 
     per_symbol: dict[str, Any] = {}

@@ -104,6 +104,8 @@ app.include_router(algorithms_router)
 # GET /api/backtest/latest). Implementation in api/backtest.py.
 from api.backtest import register as _register_backtest
 _register_backtest(app)
+from api.scalp_backtest import register as _register_scalp_backtest
+_register_scalp_backtest(app)
 
 # Global instances
 trading_engine = None

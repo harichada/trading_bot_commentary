@@ -3560,30 +3560,91 @@
             <!-- Configuration -->
             <div class="card">
                 <h3>Backtest Configuration</h3>
-                <div class="bt-symbol-mode">
-                    <label><input type="radio" name="bt-symbol-mode" value="top_n" checked onchange="onBacktestModeChange()"> Top-N most active</label>
-                    <label><input type="radio" name="bt-symbol-mode" value="explicit" onchange="onBacktestModeChange()"> Explicit list</label>
-                </div>
-                <div class="backtest-config">
-                    <div class="backtest-input-group" id="bt-topn-group">
-                        <label>Top-N symbols</label>
-                        <input type="number" id="bt-top-n" value="30" min="1" max="200">
-                    </div>
-                    <div class="backtest-input-group" id="bt-symbols-group" style="display:none;">
-                        <label>Symbols (comma-separated)</label>
-                        <input type="text" id="bt-symbols" value="NVDA,TSLA,AMD,AAPL" placeholder="NVDA,TSLA,AMD">
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Lookback (days)</label>
-                        <input type="number" id="bt-days" value="90" min="1" max="365">
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Bar frequency (min)</label>
-                        <select id="bt-frequency">
-                            <option value="1">1 minute</option>
-                            <option value="5" selected>5 minutes</option>
-                            <option value="15">15 minutes</option>
+
+                <!-- Strategy selector -->
+                <div class="backtest-config" style="margin-bottom:4px;">
+                    <div class="backtest-input-group" style="flex: 0 0 auto; min-width: 320px;">
+                        <label>Strategy</label>
+                        <select id="bt-strategy" onchange="onBtStrategyChange()" style="font-size:14px;">
+                            <option value="existing">Existing (breakout / mean_rev / momentum)</option>
+                            <option value="scalp_reversal">Scalp Reversal — 1-min RSI extreme + BB + volume</option>
                         </select>
+                    </div>
+                </div>
+
+                <!-- Existing strategy params -->
+                <div id="bt-existing-panel">
+                    <div class="bt-symbol-mode">
+                        <label><input type="radio" name="bt-symbol-mode" value="top_n" checked onchange="onBacktestModeChange()"> Top-N most active</label>
+                        <label><input type="radio" name="bt-symbol-mode" value="explicit" onchange="onBacktestModeChange()"> Explicit list</label>
+                    </div>
+                    <div class="backtest-config">
+                        <div class="backtest-input-group" id="bt-topn-group">
+                            <label>Top-N symbols</label>
+                            <input type="number" id="bt-top-n" value="30" min="1" max="200">
+                        </div>
+                        <div class="backtest-input-group" id="bt-symbols-group" style="display:none;">
+                            <label>Symbols (comma-separated)</label>
+                            <input type="text" id="bt-symbols" value="NVDA,TSLA,AMD,AAPL" placeholder="NVDA,TSLA,AMD">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Lookback (days)</label>
+                            <input type="number" id="bt-days" value="90" min="1" max="365">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Bar frequency (min)</label>
+                            <select id="bt-frequency">
+                                <option value="1">1 minute</option>
+                                <option value="5" selected>5 minutes</option>
+                                <option value="15">15 minutes</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scalp reversal params (hidden until selected) -->
+                <div id="bt-scalp-panel" style="display:none;">
+                    <div class="backtest-config">
+                        <div class="backtest-input-group">
+                            <label>Symbols (comma-separated)</label>
+                            <input type="text" id="bt-scalp-symbols" value="NVDA,TSLA,AMD,QQQ,SMCI,IREN,MU" placeholder="NVDA,TSLA,AMD">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Lookback (days)</label>
+                            <input type="number" id="bt-scalp-days" value="90" min="1" max="365">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>RSI long threshold</label>
+                            <input type="number" id="bt-scalp-rsi-long" value="30" min="5" max="50" step="1">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>RSI short threshold</label>
+                            <input type="number" id="bt-scalp-rsi-short" value="75" min="50" max="95" step="1">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Min vol ratio (×avg)</label>
+                            <input type="number" id="bt-scalp-vol-min" value="2.0" min="0.5" max="20" step="0.5">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Quick exit bars</label>
+                            <input type="number" id="bt-scalp-quick-bars" value="3" min="1" max="30">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Min profit % (quick exit)</label>
+                            <input type="number" id="bt-scalp-min-profit" value="0.15" min="0.01" max="5" step="0.01">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Max hold bars (timeout)</label>
+                            <input type="number" id="bt-scalp-max-hold" value="15" min="1" max="120">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Max concurrent slots</label>
+                            <input type="number" id="bt-scalp-slots" value="10" min="1" max="50">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>Capital (USD)</label>
+                            <input type="number" id="bt-scalp-capital" value="100000" min="1000" step="1000">
+                        </div>
                     </div>
                 </div>
                 <div style="text-align: center; margin-top: 20px;">
@@ -3632,6 +3693,30 @@
                     <div style="position: relative; height: 260px;">
                         <canvas id="bt-exit-chart"></canvas>
                     </div>
+                </div>
+            </div>
+
+            <!-- Scalp Reversal Results (shown only for scalp runs) -->
+            <div id="bt-scalp-results-container" style="display:none;">
+                <div class="card">
+                    <h3>Scalp Reversal — Summary</h3>
+                    <div id="bt-scalp-meta" style="font-size:12px; color:#888; margin-bottom:12px;"></div>
+                    <table class="bt-strategy-table">
+                        <thead>
+                            <tr>
+                                <th>Side</th><th>Trades</th><th>Win %</th><th>Avg R %</th><th>Sum R %</th><th>$PnL</th><th>Sharpe</th><th>Avg Hold</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bt-scalp-sides-body"></tbody>
+                    </table>
+                </div>
+                <div class="card">
+                    <h3>Exit Breakdown</h3>
+                    <div style="position:relative; height:220px;"><canvas id="bt-scalp-exit-chart"></canvas></div>
+                </div>
+                <div class="card">
+                    <h3>Per-Symbol</h3>
+                    <div id="bt-scalp-symbols-table"></div>
                 </div>
             </div>
 
@@ -4549,6 +4634,12 @@
                 .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
+        function onBtStrategyChange() {
+            const s = document.getElementById('bt-strategy').value;
+            document.getElementById('bt-existing-panel').style.display = (s === 'existing') ? '' : 'none';
+            document.getElementById('bt-scalp-panel').style.display    = (s === 'scalp_reversal') ? '' : 'none';
+        }
+
         function onBacktestModeChange() {
             const mode = document.querySelector('input[name="bt-symbol-mode"]:checked').value;
             document.getElementById('bt-topn-group').style.display    = (mode === 'top_n')    ? '' : 'none';
@@ -4596,11 +4687,109 @@
             }
         }
 
+        function readScalpForm() {
+            return {
+                symbols: document.getElementById('bt-scalp-symbols').value
+                    .split(',').map(s => s.trim()).filter(Boolean),
+                days:              parseInt(document.getElementById('bt-scalp-days').value, 10),
+                rsi_long_thresh:   parseFloat(document.getElementById('bt-scalp-rsi-long').value),
+                rsi_short_thresh:  parseFloat(document.getElementById('bt-scalp-rsi-short').value),
+                vol_min:           parseFloat(document.getElementById('bt-scalp-vol-min').value),
+                quick_exit_bars:   parseInt(document.getElementById('bt-scalp-quick-bars').value, 10),
+                min_profit_pct:    parseFloat(document.getElementById('bt-scalp-min-profit').value),
+                max_hold_bars:     parseInt(document.getElementById('bt-scalp-max-hold').value, 10),
+                max_slots:         parseInt(document.getElementById('bt-scalp-slots').value, 10),
+                capital_usd:       parseInt(document.getElementById('bt-scalp-capital').value, 10),
+            };
+        }
+
+        function renderScalpReport(report) {
+            document.getElementById('bt-scalp-results-container').style.display = 'block';
+            document.getElementById('backtest-results-container').style.display = 'none';
+            document.getElementById('backtest-no-data').style.display = 'none';
+
+            const p = report.params || {};
+            document.getElementById('bt-scalp-meta').innerHTML =
+                '<b>Symbols:</b> ' + escHtml((report.symbols||[]).join(', ')) +
+                ' &nbsp;|&nbsp; <b>Days:</b> ' + escHtml(report.days) +
+                ' &nbsp;|&nbsp; <b>Capital:</b> $' + escHtml((report.capital_usd||0).toLocaleString()) +
+                ' &nbsp;|&nbsp; <b>Slots:</b> ' + escHtml(report.max_slots) +
+                ' &nbsp;|&nbsp; <b>Dropped:</b> ' + escHtml(report.dropped_trades) +
+                ' &nbsp;|&nbsp; <b>$PnL:</b> <span class="' + _signClass(report.total_dollar_pnl) + '">$' + (report.total_dollar_pnl||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0}) + '</span>' +
+                ' &nbsp;|&nbsp; <b>Run:</b> ' + escHtml(report.run_date||'—');
+
+            const rows = [];
+            const overall = report.overall || {};
+            const sides = report.by_side || {};
+            const addRow = (label, m, dollar) => {
+                if (!m || !m.n_trades) return;
+                const d = dollar !== undefined ? '<span class="' + _signClass(dollar) + '">$' + dollar.toLocaleString(undefined,{maximumFractionDigits:0}) + '</span>' : '—';
+                rows.push('<tr><td><b>' + escHtml(label) + '</b></td>' +
+                    '<td>' + m.n_trades + '</td>' +
+                    '<td>' + (m.win_rate_pct||0).toFixed(1) + '%</td>' +
+                    '<td class="' + _signClass(m.avg_return_pct) + '">' + _fmtSigned(m.avg_return_pct,3) + '%</td>' +
+                    '<td class="' + _signClass(m.sum_return_pct) + '">' + _fmtSigned(m.sum_return_pct,2) + '%</td>' +
+                    '<td>' + d + '</td>' +
+                    '<td class="' + _signClass(m.per_trade_sharpe) + '">' + _fmtSigned(m.per_trade_sharpe,3) + '</td>' +
+                    '<td>' + (m.avg_hold_bars||0).toFixed(1) + '</td></tr>');
+            };
+            addRow('OVERALL', overall, report.total_dollar_pnl);
+            addRow('long', sides.long);
+            addRow('short', sides.short);
+            document.getElementById('bt-scalp-sides-body').innerHTML = rows.join('');
+
+            // Exit breakdown chart
+            const bd = overall.exit_breakdown || {};
+            const reasons = ['quick_profit','stop','target','timeout','eod'];
+            const colors  = ['#22c55e','#ef4444','#3b82f6','#eab308','#6366f1'];
+            const canvas = document.getElementById('bt-scalp-exit-chart');
+            if (canvas && typeof Chart !== 'undefined') {
+                if (window._btScalpExitChart) { window._btScalpExitChart.destroy(); }
+                window._btScalpExitChart = new Chart(canvas.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: ['Exit Reasons'],
+                        datasets: reasons.map((r,i) => ({
+                            label: r, data: [bd[r]||0], backgroundColor: colors[i],
+                        })),
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { labels: { color:'#ccc' } } },
+                        scales: {
+                            x: { stacked:true, ticks:{color:'#ccc'}, grid:{color:'#222'} },
+                            y: { stacked:true, beginAtZero:true, max:100,
+                                 ticks:{color:'#ccc', callback: v => v+'%'}, grid:{color:'#222'} },
+                        },
+                    },
+                });
+            }
+
+            // Per-symbol table
+            const perSym = report.per_symbol || {};
+            const symEntries = Object.entries(perSym).sort((a,b) => (b[1].dollar_pnl||0) - (a[1].dollar_pnl||0));
+            const symRows = symEntries.map(([sym,m]) =>
+                '<tr><td><b>' + escHtml(sym) + '</b></td>' +
+                '<td>' + m.n_trades + '</td>' +
+                '<td>' + (m.win_rate_pct||0).toFixed(1) + '%</td>' +
+                '<td class="' + _signClass(m.avg_return_pct) + '">' + _fmtSigned(m.avg_return_pct,3) + '%</td>' +
+                '<td class="' + _signClass(m.dollar_pnl) + '">$' + (m.dollar_pnl||0).toLocaleString(undefined,{maximumFractionDigits:0}) + '</td>' +
+                '</tr>'
+            ).join('');
+            document.getElementById('bt-scalp-symbols-table').innerHTML =
+                '<table class="bt-strategy-table"><thead><tr>' +
+                '<th>Symbol</th><th>Trades</th><th>Win%</th><th>Avg R%</th><th>$PnL</th>' +
+                '</tr></thead><tbody>' + symRows + '</tbody></table>';
+        }
+
         async function runBacktest() {
             if (backtestRunning) return;
+            const strategy = document.getElementById('bt-strategy').value;
             const btn = document.getElementById('run-backtest-btn');
             const progress = document.getElementById('backtest-progress');
             const warningsEl = document.getElementById('backtest-warnings');
+
+            if (strategy === 'scalp_reversal') { runScalpBacktest(); return; }
 
             const body = readBacktestForm();
             backtestRunning = true;
@@ -4701,8 +4890,79 @@
             return n >= 0 ? 'positive' : 'negative';
         }
 
+        async function runScalpBacktest() {
+            if (backtestRunning) return;
+            const btn = document.getElementById('run-backtest-btn');
+            const progress = document.getElementById('backtest-progress');
+            const warningsEl = document.getElementById('backtest-warnings');
+
+            const body = readScalpForm();
+            const token = getWsToken ? getWsToken() : (window._wsToken || '');
+
+            btn.disabled = true;
+            backtestRunning = true;
+            progress.style.display = 'block';
+            progress.textContent = 'Starting scalp reversal backtest…';
+            if (warningsEl) warningsEl.innerHTML = '';
+
+            // Hide previous results
+            document.getElementById('bt-scalp-results-container').style.display = 'none';
+            document.getElementById('backtest-results-container').style.display = 'none';
+            document.getElementById('backtest-no-data').style.display = 'none';
+
+            let runId;
+            try {
+                const resp = await fetch('/api/backtest/scalp/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (resp.status === 429 && data.detail?.run_id) {
+                        runId = data.detail.run_id;
+                    } else {
+                        throw new Error(data.detail || `HTTP ${resp.status}`);
+                    }
+                } else {
+                    runId = data.run_id;
+                }
+            } catch (e) {
+                progress.textContent = 'Error: ' + (e.message || e);
+                btn.disabled = false;
+                backtestRunning = false;
+                return;
+            }
+
+            // Connect via WebSocket to stream progress / result
+            const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+            const ws = new WebSocket(`${wsProto}://${location.host}/ws/backtest/scalp/${runId}?token=${token}`);
+
+            ws.onmessage = (ev) => {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === 'progress') {
+                    progress.textContent = msg.message || 'Running…';
+                } else if (msg.type === 'complete') {
+                    progress.style.display = 'none';
+                    btn.disabled = false;
+                    backtestRunning = false;
+                    renderScalpReport(msg.report);
+                } else if (msg.type === 'error') {
+                    progress.textContent = 'Error: ' + (msg.message || 'unknown');
+                    btn.disabled = false;
+                    backtestRunning = false;
+                }
+            };
+            ws.onerror = () => {
+                progress.textContent = 'WebSocket error — check server logs.';
+                btn.disabled = false;
+                backtestRunning = false;
+            };
+        }
+
         function renderBacktestReport(report, fromLatest) {
             _btLastReport = report;
+            document.getElementById('bt-scalp-results-container').style.display = 'none';
             document.getElementById('backtest-results-container').style.display = 'block';
             document.getElementById('backtest-no-data').style.display = 'none';
 
