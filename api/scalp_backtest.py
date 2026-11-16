@@ -149,6 +149,11 @@ def _validate_scalp_request(body: dict) -> tuple[list[str], int, ScalpParams, in
         quick_exit_bars=_int("quick_exit_bars", 3, 1, 30),
         min_profit_pct=_flt("min_profit_pct", 0.15, 0.01, 5.0),
         max_hold_bars=_int("max_hold_bars", 15, 1, 120),
+        adx_max=_flt("adx_max", 999.0, 10.0, 999.0),
+        require_reversal_candle=bool(body.get("require_reversal_candle", False)),
+        candle_wick_ratio=_flt("candle_wick_ratio", 1.5, 0.5, 10.0),
+        entry_confirm=bool(body.get("entry_confirm", False)),
+        rsi_turn=bool(body.get("rsi_turn", False)),
     )
     return symbols, days, params, max_slots, capital_usd
 

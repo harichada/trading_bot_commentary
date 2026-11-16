@@ -3645,6 +3645,36 @@
                             <label>Capital (USD)</label>
                             <input type="number" id="bt-scalp-capital" value="100000" min="1000" step="1000">
                         </div>
+                        <div class="backtest-input-group">
+                            <label>ATR stop mult</label>
+                            <input type="number" id="bt-scalp-atr-stop" value="1.0" min="0.1" max="10" step="0.1">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>ATR target mult</label>
+                            <input type="number" id="bt-scalp-atr-target" value="2.0" min="0.1" max="20" step="0.1">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>ADX max (trend gate, 999=off)</label>
+                            <input type="number" id="bt-scalp-adx-max" value="999" min="10" max="999" step="1">
+                        </div>
+                        <div class="backtest-input-group" style="flex: 0 0 auto;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                <input type="checkbox" id="bt-scalp-reversal-candle" style="width:16px;height:16px;">
+                                Require reversal candle (hammer / shooting star)
+                            </label>
+                        </div>
+                        <div class="backtest-input-group" style="flex: 0 0 auto;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                <input type="checkbox" id="bt-scalp-entry-confirm" style="width:16px;height:16px;">
+                                Delayed entry — wait 1 bar for price to confirm the turn
+                            </label>
+                        </div>
+                        <div class="backtest-input-group" style="flex: 0 0 auto;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                <input type="checkbox" id="bt-scalp-rsi-turn" style="width:16px;height:16px;">
+                                RSI turn — enter only when RSI is extreme AND ticking back (inflection)
+                            </label>
+                        </div>
                     </div>
                 </div>
                 <div style="text-align: center; margin-top: 20px;">
@@ -4691,15 +4721,21 @@
             return {
                 symbols: document.getElementById('bt-scalp-symbols').value
                     .split(',').map(s => s.trim()).filter(Boolean),
-                days:              parseInt(document.getElementById('bt-scalp-days').value, 10),
-                rsi_long_thresh:   parseFloat(document.getElementById('bt-scalp-rsi-long').value),
-                rsi_short_thresh:  parseFloat(document.getElementById('bt-scalp-rsi-short').value),
-                vol_min:           parseFloat(document.getElementById('bt-scalp-vol-min').value),
-                quick_exit_bars:   parseInt(document.getElementById('bt-scalp-quick-bars').value, 10),
-                min_profit_pct:    parseFloat(document.getElementById('bt-scalp-min-profit').value),
-                max_hold_bars:     parseInt(document.getElementById('bt-scalp-max-hold').value, 10),
-                max_slots:         parseInt(document.getElementById('bt-scalp-slots').value, 10),
-                capital_usd:       parseInt(document.getElementById('bt-scalp-capital').value, 10),
+                days:                    parseInt(document.getElementById('bt-scalp-days').value, 10),
+                rsi_long_thresh:         parseFloat(document.getElementById('bt-scalp-rsi-long').value),
+                rsi_short_thresh:        parseFloat(document.getElementById('bt-scalp-rsi-short').value),
+                vol_min:                 parseFloat(document.getElementById('bt-scalp-vol-min').value),
+                quick_exit_bars:         parseInt(document.getElementById('bt-scalp-quick-bars').value, 10),
+                min_profit_pct:          parseFloat(document.getElementById('bt-scalp-min-profit').value),
+                max_hold_bars:           parseInt(document.getElementById('bt-scalp-max-hold').value, 10),
+                max_slots:               parseInt(document.getElementById('bt-scalp-slots').value, 10),
+                capital_usd:             parseInt(document.getElementById('bt-scalp-capital').value, 10),
+                atr_stop_mult:           parseFloat(document.getElementById('bt-scalp-atr-stop').value),
+                atr_target_mult:         parseFloat(document.getElementById('bt-scalp-atr-target').value),
+                adx_max:                 parseFloat(document.getElementById('bt-scalp-adx-max').value),
+                require_reversal_candle: document.getElementById('bt-scalp-reversal-candle').checked,
+                entry_confirm:           document.getElementById('bt-scalp-entry-confirm').checked,
+                rsi_turn:                document.getElementById('bt-scalp-rsi-turn').checked,
             };
         }
 
@@ -4893,17 +4929,15 @@
         async function runScalpBacktest() {
             if (backtestRunning) return;
             const btn = document.getElementById('run-backtest-btn');
-            const progress = document.getElementById('backtest-progress');
             const warningsEl = document.getElementById('backtest-warnings');
 
             const body = readScalpForm();
-            const token = getWsToken ? getWsToken() : (window._wsToken || '');
 
-            btn.disabled = true;
             backtestRunning = true;
-            progress.style.display = 'block';
-            progress.textContent = 'Starting scalp reversal backtest…';
-            if (warningsEl) warningsEl.innerHTML = '';
+            btn.disabled = true;
+            btn.textContent = '⏳ Running...';
+            if (warningsEl) warningsEl.textContent = '';
+            setBacktestProgress(2, 'Submitting scalp backtest…');
 
             // Hide previous results
             document.getElementById('bt-scalp-results-container').style.display = 'none';
@@ -4912,52 +4946,52 @@
 
             let runId;
             try {
-                const resp = await fetch('/api/backtest/scalp/run', {
+                const resp = await authFetch('/api/backtest/scalp/run', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
                 });
-                const data = await resp.json();
-                if (!resp.ok) {
-                    if (resp.status === 429 && data.detail?.run_id) {
-                        runId = data.detail.run_id;
+                const data = await resp.json().catch(() => ({}));
+                if (resp.status === 429) {
+                    runId = data?.detail?.run_id;
+                    if (runId) {
+                        if (warningsEl) warningsEl.textContent = 'Already running — attaching to in-flight run.';
                     } else {
-                        throw new Error(data.detail || `HTTP ${resp.status}`);
+                        throw new Error('Scalp backtest already running');
                     }
+                } else if (!resp.ok) {
+                    const msg = data?.detail || data?.message || ('HTTP ' + resp.status);
+                    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
                 } else {
                     runId = data.run_id;
+                    setBacktestProgress(5, 'Run started…');
                 }
             } catch (e) {
-                progress.textContent = 'Error: ' + (e.message || e);
-                btn.disabled = false;
-                backtestRunning = false;
+                _onBacktestError(e.message || String(e));
                 return;
             }
 
-            // Connect via WebSocket to stream progress / result
-            const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-            const ws = new WebSocket(`${wsProto}://${location.host}/ws/backtest/scalp/${runId}?token=${token}`);
+            // WebSocket progress stream — same token pattern as _openBacktestWs
+            const tokenQs = window.TRADING_API_KEY ? `?token=${encodeURIComponent(window.TRADING_API_KEY)}` : '';
+            const proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${proto}//${window.location.host}/ws/backtest/scalp/${encodeURIComponent(runId)}${tokenQs}`);
 
             ws.onmessage = (ev) => {
-                const msg = JSON.parse(ev.data);
+                let msg;
+                try { msg = JSON.parse(ev.data); } catch (e) { return; }
                 if (msg.type === 'progress') {
-                    progress.textContent = msg.message || 'Running…';
+                    setBacktestProgress(30, msg.message || 'Running…');
                 } else if (msg.type === 'complete') {
-                    progress.style.display = 'none';
-                    btn.disabled = false;
-                    backtestRunning = false;
+                    setBacktestProgress(100, 'Complete!');
                     renderScalpReport(msg.report);
+                    _finishBacktestRun();
+                    ws.close();
                 } else if (msg.type === 'error') {
-                    progress.textContent = 'Error: ' + (msg.message || 'unknown');
-                    btn.disabled = false;
-                    backtestRunning = false;
+                    _onBacktestError(msg.message || 'Scalp backtest failed');
+                    ws.close();
                 }
             };
-            ws.onerror = () => {
-                progress.textContent = 'WebSocket error — check server logs.';
-                btn.disabled = false;
-                backtestRunning = false;
-            };
+            ws.onerror = () => _onBacktestError('WebSocket error — check server logs.');
         }
 
         function renderBacktestReport(report, fromLatest) {

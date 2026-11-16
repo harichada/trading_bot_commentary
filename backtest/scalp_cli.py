@@ -39,6 +39,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    dest="rsi_short", help="RSI threshold for short signal (default: %(default)s)")
     p.add_argument("--vol-min", type=float, default=2.0,
                    dest="vol_min", help="Minimum volume ratio to trigger (default: %(default)s)")
+    p.add_argument("--rsi-turn", action="store_true", default=False,
+                   dest="rsi_turn",
+                   help="Only enter when RSI is at extreme AND ticking back (inflection confirmation)")
+    p.add_argument("--entry-confirm", action="store_true", default=False,
+                   dest="entry_confirm",
+                   help="Wait one bar after the signal for price to confirm the turn before entering")
+    p.add_argument("--reversal-candle", action="store_true", default=False,
+                   dest="reversal_candle",
+                   help="Require signal bar to show a reversal candle (hammer/shooting-star or bullish/bearish close)")
+    p.add_argument("--candle-wick-ratio", type=float, default=1.5,
+                   dest="candle_wick_ratio",
+                   help="Wick-to-body ratio to qualify as hammer/shooting-star (default: %(default)s)")
+    p.add_argument("--adx-max", type=float, default=999.0,
+                   dest="adx_max",
+                   help="Skip signals when ADX > this (ranging filter, 999=disabled, try 25-30)")
+    p.add_argument("--atr-stop-mult", type=float, default=1.0,
+                   dest="atr_stop_mult",
+                   help="ATR multiplier for stop distance (default: %(default)s)")
+    p.add_argument("--atr-target-mult", type=float, default=2.0,
+                   dest="atr_target_mult",
+                   help="ATR multiplier for target distance (default: %(default)s)")
     p.add_argument("--quick-exit-bars", type=int, default=3,
                    dest="quick_exit_bars",
                    help="Bars window for quick-profit exit (default: %(default)s)")
@@ -128,9 +149,16 @@ def main(argv: list[str] | None = None) -> None:
         rsi_long_thresh=args.rsi_long,
         rsi_short_thresh=args.rsi_short,
         vol_min=args.vol_min,
+        atr_stop_mult=args.atr_stop_mult,
+        atr_target_mult=args.atr_target_mult,
         quick_exit_bars=args.quick_exit_bars,
         min_profit_pct=args.min_profit_pct,
         max_hold_bars=args.max_hold_bars,
+        adx_max=args.adx_max,
+        require_reversal_candle=args.reversal_candle,
+        candle_wick_ratio=args.candle_wick_ratio,
+        entry_confirm=args.entry_confirm,
+        rsi_turn=args.rsi_turn,
     )
     report = run(
         symbols=args.symbols,

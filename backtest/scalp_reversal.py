@@ -40,6 +40,21 @@ class ScalpParams:
     quick_exit_bars: int = 3
     min_profit_pct: float = 0.15
     max_hold_bars: int = 15
+    # ADX gate: skip signal when trend strength exceeds this (999 = disabled)
+    adx_max: float = 999.0
+    # Candle confirmation: require the signal bar to show a reversal candle shape
+    # Long: bullish close (close > open) or hammer (lower wick >= body * wick_ratio)
+    # Short: bearish close (close < open) or shooting star (upper wick >= body * wick_ratio)
+    require_reversal_candle: bool = False
+    candle_wick_ratio: float = 1.5
+    # Delayed entry: wait one bar after the signal for price to confirm the turn
+    # Long confirms if close[i+1] > close[i]; short if close[i+1] < close[i]
+    # Pending signals are cleared at EOD and at the start of each new session
+    entry_confirm: bool = False
+    # RSI turn confirmation: only enter when RSI is at extreme AND ticking back
+    # Long: rsi < long_thresh AND rsi > prev_rsi (momentum inflecting up)
+    # Short: rsi > short_thresh AND rsi < prev_rsi (momentum inflecting down)
+    rsi_turn: bool = False
 
 
 def load_bars(symbol: str, days: int, dsn: str) -> pd.DataFrame:
@@ -81,6 +96,10 @@ def replay_symbol_scalp(
     # Two independent position slots (one per side, no pyramiding).
     open_long: dict | None = None
     open_short: dict | None = None
+    # Pending entries: set when entry_confirm=True; confirmed or discarded next bar.
+    # Each pending stores: signal_px, atr, entry_indicators (from signal bar)
+    pending_long: dict | None = None
+    pending_short: dict | None = None
 
     # Precompute ET dates for per-day logic.
     if df.index.tz is None:
@@ -105,6 +124,10 @@ def replay_symbol_scalp(
 
         bar_date = et_dates[i]
         day_bar_count[bar_date] = day_bar_count.get(bar_date, 0) + 1
+        if day_bar_count[bar_date] == 1:
+            # New session: discard any pending entry that crossed a day boundary.
+            pending_long = None
+            pending_short = None
         if day_bar_count[bar_date] <= 15:
             # Skip first 15 bars of each session (RSI instability at open).
             # Still flush EOD for any position open at day boundary.
@@ -204,15 +227,68 @@ def replay_symbol_scalp(
                 ))
                 open_short = None
 
+        # --- Confirm or discard pending entries (entry_confirm mode) ---
+        # Pending is set on the signal bar; this bar is the confirmation bar.
+        # Long confirms if price closed higher than signal bar; else discard.
+        # Always clears after one bar so it never carries into a 3rd bar.
+        if pending_long is not None and open_long is None:
+            if close_px > pending_long["signal_px"]:
+                atr_p = pending_long["atr"]
+                open_long = {
+                    "entry": close_px,
+                    "stop": close_px - atr_p * params.atr_stop_mult,
+                    "target": close_px + atr_p * params.atr_target_mult,
+                    "entry_time": bar_ts,
+                    "hold": 0,
+                    "entry_indicators": pending_long["entry_indicators"],
+                }
+            pending_long = None
+
+        if pending_short is not None and open_short is None:
+            if close_px < pending_short["signal_px"]:
+                atr_p = pending_short["atr"]
+                open_short = {
+                    "entry": close_px,
+                    "stop": close_px + atr_p * params.atr_stop_mult,
+                    "target": close_px - atr_p * params.atr_target_mult,
+                    "entry_time": bar_ts,
+                    "hold": 0,
+                    "entry_indicators": pending_short["entry_indicators"],
+                }
+            pending_short = None
+
         # --- Skip signal check during first-15-bar window OR last bar of session ---
         if day_bar_count[bar_date] <= 15 or is_last_bar_of_day:
             continue
 
         atr = float(indicators["atr"])
+        adx = float(indicators["adx"])
         vol_ratio = float(indicators["volume_ratio"])
         rsi = float(indicators["rsi"])
+        prev_rsi = float(ind.iloc[i - 1]["rsi"]) if i > 0 else rsi
         bb_lower = float(indicators["bb_lower"])
         bb_upper = float(indicators["bb_upper"])
+
+        # ADX gate: skip when market is strongly trending (reversals fail in trends)
+        if adx > params.adx_max:
+            continue
+
+        open_px = float(bar["Open"])
+        high_px = float(bar["High"])
+        low_px  = float(bar["Low"])
+
+        # Candle shape flags (computed once, used in both signal checks below)
+        if params.require_reversal_candle:
+            body        = abs(close_px - open_px)
+            lower_wick  = min(open_px, close_px) - low_px
+            upper_wick  = high_px - max(open_px, close_px)
+            wr          = params.candle_wick_ratio
+            # Long confirmation: bar closed up, OR lower wick dominates (hammer)
+            is_rev_long  = (close_px > open_px) or (body > 0 and lower_wick >= body * wr)
+            # Short confirmation: bar closed down, OR upper wick dominates (shooting star)
+            is_rev_short = (close_px < open_px) or (body > 0 and upper_wick >= body * wr)
+        else:
+            is_rev_long = is_rev_short = True
 
         def _snapshot() -> dict:
             return {
@@ -223,33 +299,50 @@ def replay_symbol_scalp(
                 and not pd.isna(v)
             }
 
+        snap = _snapshot()
+
+        rsi_turn_long  = (not params.rsi_turn) or (rsi > prev_rsi)
+        rsi_turn_short = (not params.rsi_turn) or (rsi < prev_rsi)
+
         # --- Long signal ---
         if (open_long is None
+                and pending_long is None
                 and rsi < params.rsi_long_thresh
                 and close_px <= bb_lower
-                and vol_ratio >= params.vol_min):
-            open_long = {
-                "entry": close_px,
-                "stop": close_px - atr * params.atr_stop_mult,
-                "target": close_px + atr * params.atr_target_mult,
-                "entry_time": bar_ts,
-                "hold": 0,
-                "entry_indicators": _snapshot(),
-            }
+                and vol_ratio >= params.vol_min
+                and is_rev_long
+                and rsi_turn_long):
+            if params.entry_confirm:
+                pending_long = {"signal_px": close_px, "atr": atr, "entry_indicators": snap}
+            else:
+                open_long = {
+                    "entry": close_px,
+                    "stop": close_px - atr * params.atr_stop_mult,
+                    "target": close_px + atr * params.atr_target_mult,
+                    "entry_time": bar_ts,
+                    "hold": 0,
+                    "entry_indicators": snap,
+                }
 
         # --- Short signal ---
         if (open_short is None
+                and pending_short is None
                 and rsi > params.rsi_short_thresh
                 and close_px >= bb_upper
-                and vol_ratio >= params.vol_min):
-            open_short = {
-                "entry": close_px,
-                "stop": close_px + atr * params.atr_stop_mult,
-                "target": close_px - atr * params.atr_target_mult,
-                "entry_time": bar_ts,
-                "hold": 0,
-                "entry_indicators": _snapshot(),
-            }
+                and vol_ratio >= params.vol_min
+                and is_rev_short
+                and rsi_turn_short):
+            if params.entry_confirm:
+                pending_short = {"signal_px": close_px, "atr": atr, "entry_indicators": snap}
+            else:
+                open_short = {
+                    "entry": close_px,
+                    "stop": close_px + atr * params.atr_stop_mult,
+                    "target": close_px - atr * params.atr_target_mult,
+                    "entry_time": bar_ts,
+                    "hold": 0,
+                    "entry_indicators": snap,
+                }
 
     # Final EOD flush for anything still open at the very last bar.
     final_bar = df.iloc[-1]
