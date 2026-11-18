@@ -186,9 +186,11 @@ class ScalpShadowEngine:
                 today = _today_et()
                 if today != self._today_date:
                     self._on_new_day(today)
-                    if today != self._last_screener_date:
-                        self._last_screener_date = today
-                        await self._refresh_symbols_async()
+                # Screener: once per calendar day — fires on new day AND on
+                # mid-day restart because _last_screener_date is never persisted
+                if today != self._last_screener_date:
+                    self._last_screener_date = today
+                    await self._refresh_symbols_async()
                 await asyncio.to_thread(self._tick)
             except asyncio.CancelledError:
                 raise
