@@ -55,3 +55,60 @@ def test_missing_symbol_skipped_gracefully():
         result = asyncio.run(screener.select())
     assert "AAPL" in result
     assert "INVALID_XYZ" not in result
+
+
+def test_fetch_quotes_returns_gap_and_volume():
+    """_fetch_quotes with a patched yf.download returns expected quote fields."""
+    screener = ScalpScreener(["AAPL"], top_n=1)
+    # Single-symbol path: yfinance returns flat (non-MultiIndex) columns
+    idx = pd.date_range("2026-11-17", periods=2, freq="B")
+    fake_df = pd.DataFrame({
+        "Open":   [100.0, 103.0],
+        "High":   [101.0, 104.0],
+        "Low":    [99.0,  102.0],
+        "Close":  [100.5, 103.5],
+        "Volume": [2_000_000, 3_000_000],
+    }, index=idx)
+    with patch("yfinance.download", return_value=fake_df):
+        import asyncio
+        quotes = asyncio.run(screener._fetch_quotes())
+    assert "AAPL" in quotes
+    q = quotes["AAPL"]
+    assert q["prev_close"] == pytest.approx(100.5, abs=0.01)
+    assert q["open"] == pytest.approx(103.0, abs=0.01)
+    assert q["volume"] == pytest.approx(3_000_000, abs=1)
+
+
+def test_zero_prev_close_gives_zero_gap():
+    screener = ScalpScreener(["X"], top_n=1)
+    score = screener._score_quote(
+        {"prev_close": 0.0, "open": 5.0, "volume": 1_000_000, "avg_volume": 1_000_000, "price": 5.0}, "X"
+    )
+    assert score.gap_pct == 0.0
+
+
+def test_zero_hist_avg_gives_rvol_one():
+    screener = ScalpScreener(["X"], top_n=1)
+    score = screener._score_quote(
+        {"prev_close": 10.0, "open": 11.0, "volume": 0, "avg_volume": 0, "price": 11.0}, "X"
+    )
+    assert score.rvol == pytest.approx(1.0, abs=0.01)
+
+
+def test_news_bus_enrichment_affects_composite():
+    """When news_bus is provided, composite uses 0.4/0.4/0.2 weights and news_score > 0."""
+    screener = ScalpScreener(["AAPL"], top_n=1)
+
+    class FakeNewsBus:
+        async def get_aggregate_sentiment(self, symbol):
+            return 0.8  # strong positive
+
+    with patch.object(screener, "_fetch_quotes", return_value={"AAPL": FAKE_QUOTES["AAPL"]}):
+        import asyncio
+        scores = asyncio.run(screener.score(news_bus=FakeNewsBus()))
+
+    assert len(scores) == 1
+    assert scores[0].news_score == pytest.approx(0.8, abs=0.01)
+    # AAPL: gap_pct=3.0% → gap_score=0.3; rvol=5M/2M=2.5 → rvol_score=0.5
+    # composite = 0.3*0.4 + 0.5*0.4 + 0.8*0.2 = 0.12 + 0.20 + 0.16 = 0.48
+    assert scores[0].composite == pytest.approx(0.48, abs=0.02)

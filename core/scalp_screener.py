@@ -66,7 +66,7 @@ class ScalpScreener:
         if not self.universe:
             return {}
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         tickers = self.universe if len(self.universe) > 1 else self.universe[0]
 
         def _download() -> object:
