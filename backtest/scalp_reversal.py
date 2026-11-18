@@ -580,9 +580,11 @@ def _rank_symbols_for_day(
     ----------
     day_bars:
         Mapping of symbol → DataFrame (UTC DatetimeIndex). Each DataFrame
-        may contain rows from prior days; this function treats ``df.index[0]``
-        as the reference point: bars before that timestamp's calendar-date
-        midnight are considered "prior day" and used to establish ``prev_close``.
+        may contain rows from prior days. Uses ``df.index[-1].normalize()`` as
+        the target calendar date — the caller prepends exactly one prior-day bar
+        as row 0, so ``index[0]`` is NOT the target day; ``index[-1]`` is the
+        last bar of the actual trading day and reliably identifies the target.
+        Rows before that midnight are "prior day" context for ``prev_close``.
     top_n:
         If None, return all symbols sorted descending by composite score.
         If int, return only the top-N symbols.
