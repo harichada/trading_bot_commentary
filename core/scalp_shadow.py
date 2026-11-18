@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,8 +190,13 @@ class ScalpShadowEngine:
                 # Screener: once per calendar day — fires on new day AND on
                 # mid-day restart because _last_screener_date is never persisted
                 if today != self._last_screener_date:
-                    self._last_screener_date = today
-                    await self._refresh_symbols_async()
+                    et_now = _now_et()
+                    if et_now.hour > 9 or (et_now.hour == 9 and et_now.minute >= 31):
+                        self._last_screener_date = today
+                        await self._refresh_symbols_async()
+                    else:
+                        # Before market open — use full universe but don't lock the date
+                        self._active_symbols = list(self.symbols)
                 await asyncio.to_thread(self._tick)
             except asyncio.CancelledError:
                 raise
@@ -200,6 +206,25 @@ class ScalpShadowEngine:
 
     async def _refresh_symbols_async(self, news_bus: object = None) -> None:
         """Run the screener and update self._active_symbols for the trading day."""
+        today = _today_et()
+
+        # On same-day restart, reuse today's selection (keeps one universe per day)
+        try:
+            ndjson_path = str(SELECTIONS_PATH)
+            if os.path.exists(ndjson_path):
+                with open(ndjson_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        entry = json.loads(line)
+                        if entry.get("date") == today and entry.get("selected"):
+                            self._active_symbols = list(entry["selected"])
+                            self._open = {sym: self._open.get(sym) for sym in self._active_symbols}
+                            return
+        except Exception:
+            pass  # fall through to fresh screening
+
         try:
             screener = ScalpScreener(
                 universe=self.symbols,

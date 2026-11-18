@@ -5,11 +5,11 @@ import pandas as pd
 from core.scalp_screener import ScalpScreener, SymbolScore
 
 FAKE_QUOTES = {
-    "AAPL": {"prev_close": 100.0, "open": 103.0, "volume": 5_000_000, "avg_volume": 2_000_000, "price": 103.0},
-    "TINY": {"prev_close": 1.0,   "open": 1.05,  "volume": 100_000,   "avg_volume": 50_000,    "price": 1.05},   # fails min_price
-    "HUGE": {"prev_close": 500.0, "open": 505.0, "volume": 1_000_000, "avg_volume": 800_000,   "price": 505.0},  # fails max_price
-    "FLAT": {"prev_close": 50.0,  "open": 50.1,  "volume": 200_000,   "avg_volume": 1_000_000, "price": 50.1},   # fails min_avg_volume
-    "NVOL": {"prev_close": 50.0,  "open": 55.0,  "volume": 0,         "avg_volume": 1_000_000, "price": 55.0},   # pre-market volume=0 → use avg_volume
+    "AAPL": {"prev_close": 100.0, "open": 103.0, "volume": 5_000_000, "avg_daily_volume": 2_000_000, "price": 103.0},
+    "TINY": {"prev_close": 1.0,   "open": 1.05,  "volume": 100_000,   "avg_daily_volume": 50_000,    "price": 1.05},   # fails min_price
+    "HUGE": {"prev_close": 500.0, "open": 505.0, "volume": 1_000_000, "avg_daily_volume": 800_000,   "price": 505.0},  # fails max_price (>500)
+    "FLAT": {"prev_close": 50.0,  "open": 50.1,  "volume": 200_000,   "avg_daily_volume": 200_000,   "price": 50.1},   # fails min_avg_volume
+    "NVOL": {"prev_close": 50.0,  "open": 55.0,  "volume": 0,         "avg_daily_volume": 1_000_000, "price": 55.0},   # pre-market volume=0 → use avg_daily_volume
 }
 
 def test_gap_pct_calculated_correctly():
@@ -82,7 +82,7 @@ def test_fetch_quotes_returns_gap_and_volume():
 def test_zero_prev_close_gives_zero_gap():
     screener = ScalpScreener(["X"], top_n=1)
     score = screener._score_quote(
-        {"prev_close": 0.0, "open": 5.0, "volume": 1_000_000, "avg_volume": 1_000_000, "price": 5.0}, "X"
+        {"prev_close": 0.0, "open": 5.0, "volume": 1_000_000, "avg_daily_volume": 1_000_000, "price": 5.0}, "X"
     )
     assert score.gap_pct == 0.0
 
@@ -90,7 +90,7 @@ def test_zero_prev_close_gives_zero_gap():
 def test_zero_hist_avg_gives_rvol_one():
     screener = ScalpScreener(["X"], top_n=1)
     score = screener._score_quote(
-        {"prev_close": 10.0, "open": 11.0, "volume": 0, "avg_volume": 0, "price": 11.0}, "X"
+        {"prev_close": 10.0, "open": 11.0, "volume": 0, "avg_daily_volume": 0, "price": 11.0}, "X"
     )
     assert score.rvol == pytest.approx(1.0, abs=0.01)
 
@@ -112,3 +112,36 @@ def test_news_bus_enrichment_affects_composite():
     # AAPL: gap_pct=3.0% → gap_score=0.3; rvol=5M/2M=2.5 → rvol_score=0.5
     # composite = 0.3*0.4 + 0.5*0.4 + 0.8*0.2 = 0.12 + 0.20 + 0.16 = 0.48
     assert scores[0].composite == pytest.approx(0.48, abs=0.02)
+
+
+def test_fetch_quotes_multi_symbol_path():
+    """_fetch_quotes with MultiIndex columns (multi-symbol yfinance format) returns all symbols."""
+    import asyncio
+    import numpy as np
+
+    syms = ["AAPL", "MSFT"]
+    screener = ScalpScreener(syms, top_n=2)
+
+    def mock_download_multi(tickers, **kwargs):
+        sym_list = tickers if isinstance(tickers, list) else tickers.split()
+        metrics = ["Open", "High", "Low", "Close", "Volume"]
+        # group_by="ticker" → first level = ticker, second level = metric
+        idx = pd.MultiIndex.from_product([sym_list, metrics])
+        data = {col: [100.0 if col[1] != "Volume" else 1_000_000] * 2
+                for col in idx}
+        df = pd.DataFrame(data, index=pd.date_range("2026-01-09", periods=2, freq="B"))
+        df.columns = idx
+        return df
+
+    with patch("yfinance.download", side_effect=mock_download_multi):
+        quotes = asyncio.run(screener._fetch_quotes())
+
+    assert "AAPL" in quotes
+    assert "MSFT" in quotes
+    for sym in syms:
+        q = quotes[sym]
+        assert "prev_close" in q
+        assert "open" in q
+        assert "volume" in q
+        assert "avg_daily_volume" in q
+        assert q["price"] == pytest.approx(100.0, abs=0.01)

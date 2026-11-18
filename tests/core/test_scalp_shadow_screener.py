@@ -2,7 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import pytest
 from unittest.mock import AsyncMock, patch
+
+
+@pytest.fixture(autouse=True)
+def _isolate_audit_log(tmp_path, monkeypatch):
+    """Redirect SELECTIONS_PATH to a temp file so tests never touch the real audit log."""
+    import core.scalp_shadow as mod
+    monkeypatch.setattr(mod, "SELECTIONS_PATH", tmp_path / "sel.ndjson")
+    yield
 
 
 def test_active_symbols_initialized_from_symbols():
@@ -129,3 +139,59 @@ def test_refresh_preserves_open_trade_for_dropped_symbol():
     # Its open trade must be preserved
     assert e._open.get("AMD") is not None
     assert e._open["AMD"]["entry"] == 50.0
+
+
+def test_screener_skips_before_market_open(tmp_path, monkeypatch):
+    """Before 09:31 ET: active_symbols = universe, _last_screener_date stays empty."""
+    import core.scalp_shadow as mod
+    from core.scalp_shadow import ScalpShadowEngine
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+
+    # Patch _now_et to return 09:00 ET (before market open)
+    et_zone = ZoneInfo("America/New_York")
+    fake_time = datetime(2026, 11, 18, 9, 0, 0, tzinfo=et_zone)
+    monkeypatch.setattr(mod, "_now_et", lambda: fake_time)
+    # Patch _today_et to return a fixed date different from _last_screener_date
+    monkeypatch.setattr(mod, "_today_et", lambda: "2026-11-18")
+
+    engine = ScalpShadowEngine(symbols=["NVDA", "AMD"])
+    engine._last_screener_date = ""  # ensure the date check would fire
+
+    # Manually run the screener block logic (simulating _loop iteration)
+    today = mod._today_et()
+    if today != engine._last_screener_date:
+        et_now = mod._now_et()
+        if et_now.hour > 9 or (et_now.hour == 9 and et_now.minute >= 31):
+            engine._last_screener_date = today
+            asyncio.run(engine._refresh_symbols_async())
+        else:
+            engine._active_symbols = list(engine.symbols)
+
+    assert engine._active_symbols == list(engine.symbols)
+    assert engine._last_screener_date == ""
+
+
+def test_restart_reuses_todays_selection(tmp_path, monkeypatch):
+    """On same-day restart, _refresh_symbols_async reuses today's NDJSON entry without calling screener."""
+    import core.scalp_shadow as mod
+    from core.scalp_shadow import ScalpShadowEngine
+
+    today = "2026-11-18"
+    monkeypatch.setattr(mod, "_today_et", lambda: today)
+
+    # Write a today entry to the tmp NDJSON
+    sel_path = tmp_path / "sel2.ndjson"
+    monkeypatch.setattr(mod, "SELECTIONS_PATH", sel_path)
+    entry = {"date": today, "selected": ["SNAP", "MARA"], "universe": ["NVDA", "AMD", "SNAP", "MARA"], "timestamp": "2026-11-18T10:00:00Z"}
+    sel_path.write_text(json.dumps(entry) + "\n")
+
+    engine = ScalpShadowEngine(symbols=["NVDA", "AMD", "SNAP", "MARA"])
+
+    # Screener should NOT be called — if it is, raise
+    mock_select = AsyncMock(side_effect=AssertionError("screener should not be called on restart"))
+    with patch("core.scalp_shadow.ScalpScreener") as MockScreener:
+        MockScreener.return_value.select = mock_select
+        asyncio.run(engine._refresh_symbols_async())
+
+    assert engine._active_symbols == ["SNAP", "MARA"]

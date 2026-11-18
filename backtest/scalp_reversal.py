@@ -623,9 +623,11 @@ def _rank_symbols_for_day(
         open_px = float(open_bar["Open"])
         gap_pct = (open_px - prev_close) / prev_close * 100.0 if prev_close != 0 else 0.0
 
-        # rvol: first-bar volume relative to mean volume across the full slice
-        mean_volume = float(df["Volume"].mean())
-        rvol = float(open_bar["Volume"]) / mean_volume if mean_volume > 0 else 1.0
+        # rvol: causal — denominator = prior-day bars only, numerator = first-15 bars window
+        entry_window = today_bars.iloc[:15] if len(today_bars) >= 15 else today_bars
+        mean_volume = float(prior_bars["Volume"].mean()) if len(prior_bars) > 0 else 1.0
+        today_vol = float(entry_window["Volume"].sum()) if len(entry_window) > 0 else 0.0
+        rvol = today_vol / mean_volume if mean_volume > 0 else 0.0
 
         gap_score = min(abs(gap_pct) / 10.0, 1.0)
         rvol_score = min(rvol / 5.0, 1.0)
