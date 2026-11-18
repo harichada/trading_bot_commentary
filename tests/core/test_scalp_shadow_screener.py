@@ -107,3 +107,25 @@ def test_audit_log_written(tmp_path, monkeypatch):
         assert "timestamp" in record
     finally:
         monkeypatch.setattr(mod, "SELECTIONS_PATH", orig_path)
+
+
+def test_refresh_preserves_open_trade_for_dropped_symbol():
+    """Symbol with open trade survives screener drop in _active_symbols."""
+    from core.scalp_shadow import ScalpShadowEngine
+
+    e = ScalpShadowEngine(symbols=["NVDA", "AMD", "MARA"])
+    # Simulate an open trade on AMD
+    e._open = {"NVDA": None, "AMD": {"entry": 50.0, "stop": 48.0}, "MARA": None}
+    e._active_symbols = ["NVDA", "AMD", "MARA"]
+
+    # Screener drops AMD — only returns NVDA and MARA
+    mock_select = AsyncMock(return_value=["NVDA", "MARA"])
+    with patch("core.scalp_shadow.ScalpScreener") as MockScreener:
+        MockScreener.return_value.select = mock_select
+        asyncio.run(e._refresh_symbols_async())
+
+    # AMD must still be in _active_symbols because it has an open trade
+    assert "AMD" in e._active_symbols
+    # Its open trade must be preserved
+    assert e._open.get("AMD") is not None
+    assert e._open["AMD"]["entry"] == 50.0

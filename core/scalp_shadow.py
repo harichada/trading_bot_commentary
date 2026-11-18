@@ -213,14 +213,11 @@ class ScalpShadowEngine:
         if not selected:
             selected = list(self.symbols)
 
-        self._active_symbols = selected
-
-        # Rebuild _open: keep existing entries for still-active symbols,
-        # add None for new symbols, drop entries for removed symbols.
-        new_open: dict[str, dict | None] = {}
-        for sym in selected:
-            new_open[sym] = self._open.get(sym)
-        self._open = new_open
+        # Pin symbols with open trades so they are not orphaned mid-session
+        pinned = {sym for sym, pos in self._open.items() if pos is not None}
+        all_active = list(dict.fromkeys(selected + list(pinned)))  # dedup, preserve order
+        self._active_symbols = all_active
+        self._open = {sym: self._open.get(sym) for sym in self._active_symbols}
 
         # Append audit log
         today = _today_et()
