@@ -106,6 +106,10 @@ from api.backtest import register as _register_backtest
 _register_backtest(app)
 from api.scalp_backtest import register as _register_scalp_backtest
 _register_scalp_backtest(app)
+from api.scalp_shadow_api import register as _register_scalp_shadow
+_register_scalp_shadow(app)
+from api.scalp_paper_api import register as _register_scalp_paper
+_register_scalp_paper(app)
 
 # Global instances
 trading_engine = None

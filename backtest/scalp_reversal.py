@@ -55,30 +55,153 @@ class ScalpParams:
     # Long: rsi < long_thresh AND rsi > prev_rsi (momentum inflecting up)
     # Short: rsi > short_thresh AND rsi < prev_rsi (momentum inflecting down)
     rsi_turn: bool = False
+    # BB-reclaim confirmation: require price to have touched the band on the previous
+    # bar and closed back inside it on the signal bar (the actual reversal candle).
+    # Long:  prev_close <= bb_lower[i-1]  AND  close > bb_lower[i]
+    # Short: prev_close >= bb_upper[i-1]  AND  close < bb_upper[i]
+    bb_reclaim: bool = False
+    # Post-stop cool-down: after a stop-out, block re-entry on the same side for
+    # this many bars. Eliminates cascade re-entries without filtering the first signal.
+    # 0 = disabled (default). 5–15 covers the typical cascade window.
+    cooldown_bars: int = 0
+    # Side filter: "both" | "long_only" | "short_only"
+    sides: str = "both"
+    # From-open drop gate: skip long signals when price has fallen more than this
+    # percentage below the RTH session open. 0 = disabled.
+    # E.g. 1.5 → skip longs once stock is down >1.5% from open (falling-knife filter).
+    from_open_drop_max: float = 0.0
 
 
-def load_bars(symbol: str, days: int, dsn: str) -> pd.DataFrame:
-    """Load 1-min RTH bars from Postgres, returned with UTC DatetimeIndex."""
+def _fetch_today_live(symbol: str) -> pd.DataFrame:
+    """Fetch today's 1-min RTH bars from the live data priority chain.
+
+    1. SchwabBarCache — zero-lag bars from the bot's own authenticated stream
+    2. yfinance — fallback when the stream hasn't populated the cache yet
+       (e.g. bot just started, Schwab not connected)
+
+    Returns a UTC-aware DataFrame, empty if both sources fail.
+    """
+    # 1. Try Schwab stream cache
+    try:
+        from core.schwab_bar_cache import SchwabBarCache
+        df = SchwabBarCache.instance().get_today_df(symbol)
+        if not df.empty:
+            logger.debug("load_bars %s: %d today bars from Schwab cache", symbol, len(df))
+            return df
+    except Exception as exc:
+        logger.debug("load_bars schwab_bar_cache error for %s: %s", symbol, exc)
+
+    # 2. yfinance fallback — use Ticker.history() (per-object, no cross-symbol cache)
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        raw = ticker.history(period="1d", interval="1m")
+        if raw.empty:
+            return raw
+        raw = raw[["Open", "High", "Low", "Close", "Volume"]]
+        if raw.index.tz is None:
+            raw.index = raw.index.tz_localize("America/New_York")
+        raw.index = raw.index.tz_convert("UTC")
+        et = raw.index.tz_convert("America/New_York")
+        minutes = et.hour * 60 + et.minute
+        mask = (minutes >= 9 * 60 + 30) & (minutes <= 15 * 60 + 55)
+        df = raw[mask]
+        if not df.empty:
+            df = df[~df.index.duplicated(keep="last")]
+            logger.debug("load_bars %s: %d today bars from yfinance fallback", symbol, len(df))
+        return df
+    except Exception as exc:
+        logger.warning("load_bars yfinance fetch failed for %s: %s", symbol, exc)
+        return pd.DataFrame()
+
+
+def load_bars(symbol: str, days: int, dsn: str, end_date: str | None = None) -> pd.DataFrame:
+    """Load 1-min RTH bars with a UTC-aware DatetimeIndex.
+
+    When end_date (YYYY-MM-DD) is given, returns bars in the window
+    [end_date - days, end_date) from Postgres only — no live feed.
+    This enables out-of-sample backtests on arbitrary historical windows.
+
+    Default (no end_date): merges Postgres history with today's live feed.
+    """
     from data_providers.postgres import PostgresDataProvider
     provider = PostgresDataProvider(dsn)
+
+    if end_date is not None:
+        # Historical window: fetch extra data so the indicator warm-up
+        # (50 bars) is available even after clipping to the target window.
+        fetch_days = days + 60
+        period_type = "day" if fetch_days < 30 else "month"
+        period = fetch_days if period_type == "day" else max(1, fetch_days // 30)
+        hist = provider.get_market_data(
+            symbol,
+            period_type=period_type,
+            period=period,
+            frequency_type="minute",
+            frequency=1,
+        )
+        if not hist.empty:
+            hist = hist[~hist.index.duplicated(keep="last")]
+            et = hist.index.tz_convert("America/New_York")
+            minutes = et.hour * 60 + et.minute
+            mask = (minutes >= 9 * 60 + 30) & (minutes <= 15 * 60 + 55)
+            hist = hist[mask]
+        if hist.empty:
+            return hist
+        end_cutoff = pd.Timestamp(end_date, tz="UTC")
+        start_cutoff = end_cutoff - pd.Timedelta(days=days)
+        sliced = hist[(hist.index >= start_cutoff) & (hist.index < end_cutoff)]
+        return sliced[~sliced.index.duplicated(keep="last")]
+
     period_type = "day" if days < 30 else "month"
     period = days if period_type == "day" else max(1, days // 30)
-    df = provider.get_market_data(
+
+    # Fetch historical bars from Postgres (up to and including yesterday)
+    hist = provider.get_market_data(
         symbol,
         period_type=period_type,
         period=period,
         frequency_type="minute",
         frequency=1,
     )
-    if df.empty:
-        return df
-    if df.index.tz is None:
-        df = df.copy()
-        df.index = df.index.tz_localize("UTC")
-    et = df.index.tz_convert("America/New_York")
-    minutes = et.hour * 60 + et.minute
-    mask = (minutes >= 9 * 60 + 30) & (minutes <= 15 * 60 + 55)
-    return df[mask]
+    if not hist.empty:
+        hist = hist[~hist.index.duplicated(keep="last")]
+        et = hist.index.tz_convert("America/New_York")
+        minutes = et.hour * 60 + et.minute
+        mask = (minutes >= 9 * 60 + 30) & (minutes <= 15 * 60 + 55)
+        hist = hist[mask]
+
+    # Fetch today's live bars (Schwab cache → yfinance fallback)
+    today = _fetch_today_live(symbol)
+
+    if hist.empty and today.empty:
+        return pd.DataFrame()
+    if hist.empty:
+        return today[~today.index.duplicated(keep="last")] if not today.empty else today
+    if today.empty:
+        return hist
+
+    # Sanity-check: today's price range must be consistent with recent history.
+    # A >2x median ratio indicates wrong-symbol data from the live feed.
+    hist_median = hist["Close"].median()
+    today_median = today["Close"].median()
+    if hist_median > 0 and today_median > 0:
+        ratio = max(hist_median, today_median) / min(hist_median, today_median)
+        if ratio > 2.0:
+            logger.warning(
+                "load_bars %s: today median price %.4f vs hist median %.4f "
+                "(ratio %.2fx) — discarding today data as wrong-symbol feed",
+                symbol, today_median, hist_median, ratio,
+            )
+            return hist
+
+    # Merge: drop any Postgres rows that overlap with today's live data,
+    # then concat so the live bars are always the freshest tail.
+    today_start = today.index[0]
+    hist_trimmed = hist[hist.index < today_start]
+    combined = pd.concat([hist_trimmed, today]).sort_index()
+    combined = combined[~combined.index.duplicated(keep="last")]
+    return combined
 
 
 def replay_symbol_scalp(
@@ -90,6 +213,8 @@ def replay_symbol_scalp(
     if df.empty or len(df) < 51:
         return []
 
+    if not df.index.is_unique:
+        df = df[~df.index.duplicated(keep="last")]
     ind = compute_indicators(df)
     trades: list[Trade] = []
 
@@ -100,6 +225,9 @@ def replay_symbol_scalp(
     # Each pending stores: signal_px, atr, entry_indicators (from signal bar)
     pending_long: dict | None = None
     pending_short: dict | None = None
+    # Post-stop cool-down counters: bars remaining before re-entry allowed.
+    long_cd: int = 0
+    short_cd: int = 0
 
     # Precompute ET dates for per-day logic.
     if df.index.tz is None:
@@ -110,6 +238,8 @@ def replay_symbol_scalp(
 
     # Per-day bar counter to skip first 15 bars of each RTH session.
     day_bar_count: dict = {}
+    # Per-day RTH open price (first bar's Open in the session).
+    rth_open: dict = {}
 
     required = {"rsi", "macd", "macd_signal", "bb_lower", "bb_middle",
                 "bb_upper", "atr", "adx", "sma_20", "sma_50",
@@ -128,15 +258,21 @@ def replay_symbol_scalp(
             # New session: discard any pending entry that crossed a day boundary.
             pending_long = None
             pending_short = None
+            rth_open[bar_date] = float(bar["Open"])
         if day_bar_count[bar_date] <= 15:
             # Skip first 15 bars of each session (RSI instability at open).
             # Still flush EOD for any position open at day boundary.
             pass
 
         # --- EOD flush: last bar of a calendar day ---
+        # For live/shadow replay the last bar is the most recent available
+        # minute (e.g. 15:30), NOT actual market close (15:55).  Only flush
+        # when the bar time is >= 15:55 ET or when the next bar crosses into
+        # a new calendar day (multi-day backtests).
+        bar_et_minutes = et_index[i].hour * 60 + et_index[i].minute
         is_last_bar_of_day = (
-            i == len(df) - 1
-            or et_dates[i + 1] != bar_date
+            (i == len(df) - 1 and bar_et_minutes >= 15 * 60 + 55)
+            or (i < len(df) - 1 and et_dates[i + 1] != bar_date)
         )
 
         close_px = float(bar["Close"])
@@ -153,16 +289,21 @@ def replay_symbol_scalp(
             exit_reason: str | None = None
             exit_price: float | None = None
 
-            if (pos["hold"] <= params.quick_exit_bars
-                    and unrealized_pct >= params.min_profit_pct):
-                exit_reason = "quick_profit"
-                exit_price = close_px
-            elif float(bar["Low"]) <= pos["stop"]:
+            # Adverse intrabar path: stop takes priority over everything,
+            # including quick_profit. If Low touched the stop during the bar,
+            # we were stopped out before the bar closed — even if the close
+            # was profitable. Target beats quick_profit for the same reason:
+            # we'd have exited at the target price intrabar, not at close.
+            if float(bar["Low"]) <= pos["stop"]:
                 exit_reason = "stop"
                 exit_price = pos["stop"]
             elif float(bar["High"]) >= pos["target"]:
                 exit_reason = "target"
                 exit_price = pos["target"]
+            elif (pos["hold"] <= params.quick_exit_bars
+                    and unrealized_pct >= params.min_profit_pct):
+                exit_reason = "quick_profit"
+                exit_price = close_px
             elif pos["hold"] >= params.max_hold_bars:
                 exit_reason = "timeout"
                 exit_price = close_px
@@ -184,6 +325,8 @@ def replay_symbol_scalp(
                     entry_indicators=pos["entry_indicators"],
                 ))
                 open_long = None
+                if exit_reason == "stop":
+                    long_cd = params.cooldown_bars
 
         # --- Manage open short ---
         if open_short is not None:
@@ -195,16 +338,18 @@ def replay_symbol_scalp(
             exit_reason = None
             exit_price = None
 
-            if (pos["hold"] <= params.quick_exit_bars
-                    and unrealized_pct >= params.min_profit_pct):
-                exit_reason = "quick_profit"
-                exit_price = close_px
-            elif float(bar["High"]) >= pos["stop"]:
+            # Adverse intrabar path: same logic as long — stop first,
+            # then target, then quick_profit at close.
+            if float(bar["High"]) >= pos["stop"]:
                 exit_reason = "stop"
                 exit_price = pos["stop"]
             elif float(bar["Low"]) <= pos["target"]:
                 exit_reason = "target"
                 exit_price = pos["target"]
+            elif (pos["hold"] <= params.quick_exit_bars
+                    and unrealized_pct >= params.min_profit_pct):
+                exit_reason = "quick_profit"
+                exit_price = close_px
             elif pos["hold"] >= params.max_hold_bars:
                 exit_reason = "timeout"
                 exit_price = close_px
@@ -226,6 +371,14 @@ def replay_symbol_scalp(
                     entry_indicators=pos["entry_indicators"],
                 ))
                 open_short = None
+                if exit_reason == "stop":
+                    short_cd = params.cooldown_bars
+
+        # --- Decrement cool-down counters each bar ---
+        if long_cd > 0:
+            long_cd -= 1
+        if short_cd > 0:
+            short_cd -= 1
 
         # --- Confirm or discard pending entries (entry_confirm mode) ---
         # Pending is set on the signal bar; this bar is the confirmation bar.
@@ -304,11 +457,39 @@ def replay_symbol_scalp(
         rsi_turn_long  = (not params.rsi_turn) or (rsi > prev_rsi)
         rsi_turn_short = (not params.rsi_turn) or (rsi < prev_rsi)
 
+        prev_close    = float(df.iloc[i - 1]["Close"]) if i > 0 else close_px
+        prev_bb_lower = float(ind.iloc[i - 1]["bb_lower"]) if i > 0 else bb_lower
+        prev_bb_upper = float(ind.iloc[i - 1]["bb_upper"]) if i > 0 else bb_upper
+
+        # BB-reclaim replaces the band-touch condition when enabled:
+        # baseline: close <= bb_lower (entering AS price breaks the band)
+        # reclaim:  prev_close <= prev_bb_lower AND close > bb_lower
+        #           (entering AS price recovers back inside — the actual reversal bar)
+        if params.bb_reclaim:
+            bb_long_cond  = prev_close <= prev_bb_lower and close_px > bb_lower
+            bb_short_cond = prev_close >= prev_bb_upper and close_px < bb_upper
+        else:
+            bb_long_cond  = close_px <= bb_lower
+            bb_short_cond = close_px >= bb_upper
+
+        # From-open drop gate: skip longs when stock has fallen too far from session open.
+        rth_open_px = rth_open.get(bar_date)
+        from_open_pct = ((close_px - rth_open_px) / rth_open_px * 100.0
+                         if rth_open_px else 0.0)
+        long_blocked_by_drop = (
+            params.from_open_drop_max > 0
+            and rth_open_px is not None
+            and from_open_pct < -params.from_open_drop_max
+        )
+
         # --- Long signal ---
-        if (open_long is None
+        if (params.sides in ("both", "long_only")
+                and open_long is None
                 and pending_long is None
+                and long_cd == 0
+                and not long_blocked_by_drop
                 and rsi < params.rsi_long_thresh
-                and close_px <= bb_lower
+                and bb_long_cond
                 and vol_ratio >= params.vol_min
                 and is_rev_long
                 and rsi_turn_long):
@@ -325,10 +506,12 @@ def replay_symbol_scalp(
                 }
 
         # --- Short signal ---
-        if (open_short is None
+        if (params.sides in ("both", "short_only")
+                and open_short is None
                 and pending_short is None
+                and short_cd == 0
                 and rsi > params.rsi_short_thresh
-                and close_px >= bb_upper
+                and bb_short_cond
                 and vol_ratio >= params.vol_min
                 and is_rev_short
                 and rsi_turn_short):
@@ -344,26 +527,44 @@ def replay_symbol_scalp(
                     "entry_indicators": snap,
                 }
 
-    # Final EOD flush for anything still open at the very last bar.
+    # Final EOD flush — only when the last bar is at or after actual market
+    # close (15:55 ET).  During live/shadow replay the last bar is the most
+    # recent minute, NOT end-of-day; flushing at 15:08 would stamp every
+    # still-open position with exit_reason="eod" even though the market is
+    # still open and the position may resolve cleanly before 15:55.
     final_bar = df.iloc[-1]
     final_ts = df.index[-1]
-    final_px = float(final_bar["Close"])
+    try:
+        final_et = final_ts.tz_convert("America/New_York")
+        final_minutes = final_et.hour * 60 + final_et.minute
+    except Exception:
+        # Naive index — localize as UTC first
+        final_et = final_ts.tz_localize("UTC").tz_convert("America/New_York")
+        final_minutes = final_et.hour * 60 + final_et.minute
+    is_actual_eod = final_minutes >= 15 * 60 + 55   # 15:55 ET
+    logger.info(
+        "replay_eod_check %s last_bar=%s final_et=%s min=%d is_eod=%s open_long=%s open_short=%s",
+        symbol, final_ts, final_et, final_minutes, is_actual_eod,
+        open_long is not None, open_short is not None,
+    )
 
-    for side, pos in (("long", open_long), ("short", open_short)):
-        if pos is None:
-            continue
-        trades.append(Trade(
-            strategy="scalp_reversal",
-            symbol=symbol,
-            side=side,
-            entry_time=pos["entry_time"],
-            entry_price=pos["entry"],
-            exit_time=final_ts,
-            exit_price=final_px,
-            exit_reason="eod",
-            hold_bars=pos["hold"],
-            entry_indicators=pos["entry_indicators"],
-        ))
+    if is_actual_eod:
+        final_px = float(final_bar["Close"])
+        for side, pos in (("long", open_long), ("short", open_short)):
+            if pos is None:
+                continue
+            trades.append(Trade(
+                strategy="scalp_reversal",
+                symbol=symbol,
+                side=side,
+                entry_time=pos["entry_time"],
+                entry_price=pos["entry"],
+                exit_time=final_ts,
+                exit_price=final_px,
+                exit_reason="eod",
+                hold_bars=pos["hold"],
+                entry_indicators=pos["entry_indicators"],
+            ))
 
     return trades
 
@@ -405,6 +606,22 @@ def allocate_slots(
     return result
 
 
+def _load_and_replay(
+    sym: str,
+    days: int,
+    dsn: str,
+    params: ScalpParams,
+    end_date: str | None,
+) -> list[Trade]:
+    """Load bars and replay for one symbol — designed for thread-pool execution."""
+    try:
+        df = load_bars(sym, days, dsn, end_date=end_date)
+        return replay_symbol_scalp(sym, df, params)
+    except Exception as exc:
+        logger.warning("load_bars(%s) failed: %s", sym, exc)
+        return []
+
+
 def run(
     symbols: list[str] | None = None,
     days: int = 90,
@@ -412,22 +629,24 @@ def run(
     dsn: str = DEFAULT_DSN,
     max_slots: int = MAX_SLOTS,
     capital_usd: int = CAPITAL_USD,
+    end_date: str | None = None,
 ) -> dict[str, Any]:
     """Run the scalp reversal backtest across all symbols and return report dict."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     symbols = symbols or DEFAULT_SYMBOLS
     params = params or ScalpParams()
     slot_size = capital_usd / max_slots
 
     all_trades: list[Trade] = []
-    for sym in symbols:
-        logger.info("loading %s", sym)
-        try:
-            df = load_bars(sym, days, dsn)
-        except Exception as exc:
-            logger.warning("load_bars(%s) failed: %s", sym, exc)
-            continue
-        sym_trades = replay_symbol_scalp(sym, df, params)
-        all_trades.extend(sym_trades)
+    workers = min(len(symbols), 8)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_load_and_replay, sym, days, dsn, params, end_date): sym
+            for sym in symbols
+        }
+        for fut in as_completed(futures):
+            all_trades.extend(fut.result())
 
     executed = allocate_slots(all_trades, max_slots)
 
@@ -451,6 +670,8 @@ def run(
 
     def _patch_exit_bd(m: dict, side_trades: list[Trade]) -> dict:
         n = len(side_trades)
+        if "exit_breakdown" not in m:
+            m["exit_breakdown"] = {}
         m["exit_breakdown"]["quick_profit"] = round(
             100 * sum(1 for t in side_trades if t.exit_reason == "quick_profit") / n, 1
         ) if n else 0.0
@@ -493,4 +714,5 @@ def run(
         "total_trades_before_cap": len(all_trades),
         "dropped_trades": len(all_trades) - len(executed),
         "total_dollar_pnl": round(sum(dollar_pnls), 2),
+        "end_date": end_date,
     }
