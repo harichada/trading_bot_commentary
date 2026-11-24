@@ -215,7 +215,11 @@ class ScalpLiveEngine:
                 close: float, volume: float) -> None:
         if not self._running or symbol not in self.symbols:
             return
-        # Run in thread so we don't block the stream handler
+        # Cross-source dedup: Schwab stream and Alpaca poll both feed this engine.
+        # Mark ts_ms as seen here so the poll loop skips it (GIL-safe dict write).
+        if self._seen_bars.get(symbol) == ts_ms:
+            return
+        self._seen_bars[symbol] = ts_ms
         threading.Thread(
             target=self._process_bar,
             args=(symbol, ts_ms, open_, high, low, close, volume),
@@ -507,10 +511,12 @@ class ScalpLiveEngine:
 
     def _refresh_symbols(self) -> None:
         """Replace active symbol list with today's top movers from screener."""
+        from core.scalp_shadow import EXCLUDED_SYMBOLS
         try:
             from core.scalp_screener import select_symbols
             from core.scalp_regime import stock_sides
-            scored = select_symbols(top_n=max(len(self._universe), 15))
+            scored = [s for s in select_symbols(top_n=max(len(self._universe), 15))
+                      if s.symbol not in EXCLUDED_SYMBOLS]
             if scored:
                 self.symbols = [s.symbol for s in scored]
                 self._symbol_sides = {s.symbol: stock_sides(s.move_pct) for s in scored}
@@ -520,7 +526,7 @@ class ScalpLiveEngine:
                 return
         except Exception as exc:
             logger.warning("scalp_live screener failed, keeping universe: %s", exc)
-        self.symbols = list(self._universe)
+        self.symbols = [s for s in self._universe if s not in EXCLUDED_SYMBOLS]
         self._symbol_sides = {}   # no direction gate for static universe
 
     def _on_new_day(self, date: str) -> None:

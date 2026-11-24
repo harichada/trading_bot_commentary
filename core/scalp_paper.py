@@ -93,6 +93,9 @@ class ScalpPaperEngine:
         self._open: dict[str, dict] = {}
         # symbols with an order submitted but not yet confirmed in _open
         self._pending: set[str] = set()
+        # symbols that were closed in the current tick — blocks same-tick re-entry
+        # (cleared at the start of each _tick call)
+        self._just_closed: set[str] = set()
         # symbol → last processed bar timestamp
         self._last_ts: dict[str, Any] = {}
         self._today_trades: list[dict] = []
@@ -272,6 +275,7 @@ class ScalpPaperEngine:
     # ── tick ──────────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
+        self._just_closed.clear()
         today = _today_et()
         for symbol in self.symbols:
             if symbol in self._blocked_today:
@@ -386,8 +390,10 @@ class ScalpPaperEngine:
                 self._close(symbol, pos, reason, exit_px, bar_ts, today)
                 return
 
-        # ── skip signal: warm-up / EOD / position already open/pending ──────
-        if state.day_bar_count <= 15 or is_eod or symbol in self._open or symbol in self._pending:
+        # ── skip signal: warm-up / EOD / position already open/pending/just-closed ──
+        if (state.day_bar_count <= 15 or is_eod
+                or symbol in self._open or symbol in self._pending
+                or symbol in self._just_closed):
             return
         if len(self._open) + len(self._pending) >= self.max_slots:
             return
@@ -588,6 +594,7 @@ class ScalpPaperEngine:
         self._today_trades.append(record)
         self._record_loss_streak(symbol, dollar)
         del self._open[symbol]
+        self._just_closed.add(symbol)
 
         if reason == "stop":
             self._state[symbol].long_cd  = self.params.cooldown_bars
