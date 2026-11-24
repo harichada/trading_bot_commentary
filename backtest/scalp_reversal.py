@@ -72,6 +72,9 @@ class ScalpParams:
     # Intersected with `sides` — e.g. sides=long_only + direction_gate on a
     # gainer day → no trades that day.
     direction_gate: bool = False
+    # Bar granularity in minutes (1 = default 1-min bars; 5 = 5-min bars, etc.)
+    # The first-N-bar skip scales to keep roughly 15 minutes of open-filter.
+    bar_minutes: int = 1
     # From-open drop gate: skip long signals when price has fallen more than this
     # percentage below the RTH session open. 0 = disabled.
     # E.g. 1.5 → skip longs once stock is down >1.5% from open (falling-knife filter).
@@ -121,12 +124,18 @@ def _fetch_today_live(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def load_bars(symbol: str, days: int, dsn: str, end_date: str | None = None) -> pd.DataFrame:
-    """Load 1-min RTH bars with a UTC-aware DatetimeIndex.
+def load_bars(
+    symbol: str,
+    days: int,
+    dsn: str,
+    end_date: str | None = None,
+    bar_minutes: int = 1,
+) -> pd.DataFrame:
+    """Load RTH bars with a UTC-aware DatetimeIndex.
 
+    bar_minutes controls the bar granularity (1 = 1-min, 5 = 5-min, etc.).
     When end_date (YYYY-MM-DD) is given, returns bars in the window
-    [end_date - days, end_date) from Postgres only — no live feed.
-    This enables out-of-sample backtests on arbitrary historical windows.
+    [end_date - days, end_date] from Postgres only — no live feed.
 
     Default (no end_date): merges Postgres history with today's live feed.
     """
@@ -144,7 +153,7 @@ def load_bars(symbol: str, days: int, dsn: str, end_date: str | None = None) -> 
             period_type=period_type,
             period=period,
             frequency_type="minute",
-            frequency=1,
+            frequency=bar_minutes,
         )
         if not hist.empty:
             hist = hist[~hist.index.duplicated(keep="last")]
@@ -170,7 +179,7 @@ def load_bars(symbol: str, days: int, dsn: str, end_date: str | None = None) -> 
         period_type=period_type,
         period=period,
         frequency_type="minute",
-        frequency=1,
+        frequency=bar_minutes,
     )
     if not hist.empty:
         hist = hist[~hist.index.duplicated(keep="last")]
@@ -244,7 +253,10 @@ def replay_symbol_scalp(
         et_index = df.index.tz_convert("America/New_York")
     et_dates = et_index.normalize()
 
-    # Per-day bar counter to skip first 15 bars of each RTH session.
+    # Skip the first N bars of each RTH session (RSI instability at open).
+    # Scaled to ~15 minutes regardless of bar granularity.
+    _open_skip = max(1, 15 // params.bar_minutes)
+    # Per-day bar counter to skip first N bars of each RTH session.
     day_bar_count: dict = {}
     # Per-day RTH open price (first bar's Open in the session).
     rth_open: dict = {}
@@ -281,8 +293,8 @@ def replay_symbol_scalp(
                 )
             else:
                 day_direction[bar_date] = "both"  # gate inactive; params.sides handles it
-        if day_bar_count[bar_date] <= 15:
-            # Skip first 15 bars of each session (RSI instability at open).
+        if day_bar_count[bar_date] <= _open_skip:
+            # Skip first N bars of each session (RSI instability at open).
             # Still flush EOD for any position open at day boundary.
             pass
 
@@ -433,7 +445,7 @@ def replay_symbol_scalp(
             pending_short = None
 
         # --- Skip signal check during first-15-bar window OR last bar of session ---
-        if day_bar_count[bar_date] <= 15 or is_last_bar_of_day:
+        if day_bar_count[bar_date] <= _open_skip or is_last_bar_of_day:
             continue
 
         atr = float(indicators["atr"])
@@ -642,7 +654,7 @@ def _load_and_replay(
 ) -> list[Trade]:
     """Load bars and replay for one symbol — designed for thread-pool execution."""
     try:
-        df = load_bars(sym, days, dsn, end_date=end_date)
+        df = load_bars(sym, days, dsn, end_date=end_date, bar_minutes=params.bar_minutes)
         return replay_symbol_scalp(sym, df, params)
     except Exception as exc:
         logger.warning("load_bars(%s) failed: %s", sym, exc)

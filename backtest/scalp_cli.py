@@ -93,6 +93,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    dest="direction_gate",
                    help="Per-stock daily direction gate: gainer (open > prev close) → "
                         "short_only; loser → long_only. Mirrors live screener logic.")
+    p.add_argument("--bar-minutes", type=int, default=1,
+                   dest="bar_minutes",
+                   help="Bar granularity in minutes (default: 1). "
+                        "Use 5 for 5-min bars, 15 for 15-min, etc.")
     return p.parse_args(argv)
 
 
@@ -176,6 +180,7 @@ def main(argv: list[str] | None = None) -> None:
         rsi_turn=args.rsi_turn,
         sides=args.sides,
         direction_gate=args.direction_gate,
+        bar_minutes=args.bar_minutes,
         from_open_drop_max=args.from_open_drop_max,
     )
     report = run(
