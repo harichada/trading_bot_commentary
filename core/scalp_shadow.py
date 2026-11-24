@@ -52,8 +52,8 @@ DEFAULT_SHADOW_PARAMS = ScalpParams(
 )
 
 DEFAULT_SYMBOLS = [
-    "NVDA", "TSLA", "QQQ", "SMCI", "IREN", "MU",
-    "SNAP", "LCID", "PURR", "POET", "RIVN", "NBIS",
+    "QQQ", "SMCI", "IREN", "MU",
+    "SNAP", "LCID", "RIVN", "NBIS",
     "NOK", "AAL",
 ]
 
