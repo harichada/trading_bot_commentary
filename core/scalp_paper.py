@@ -25,7 +25,7 @@ import pandas as pd
 from backtest.engine import DEFAULT_DSN, compute_indicators
 from backtest.scalp_reversal import ScalpParams, load_bars
 from core.scalp_live import LIVE_DEFAULT_PARAMS
-from core.scalp_regime import spy_regime
+from core.scalp_regime import stock_sides
 from core.scalp_shadow import (
     DEFAULT_SHADOW_PARAMS,
     DEFAULT_SYMBOLS,
@@ -104,8 +104,8 @@ class ScalpPaperEngine:
         self._caution_syms:    set[str]         = set()   # tier-1: gate required + half size
         self.loss_caution_usd: float            = 150.0
         self.loss_block_usd:   float            = 300.0
-        # Today's SPY 1-min bars for intraday regime detection (reset each day)
-        self._spy_bars: pd.DataFrame = pd.DataFrame()
+        # Per-symbol direction gate: "long_only" | "short_only" | "both"
+        self._symbol_sides: dict[str, str] = {}
 
     # ── public ────────────────────────────────────────────────────────────
 
@@ -204,26 +204,27 @@ class ScalpPaperEngine:
     def _refresh_symbols(self) -> None:
         """Replace active symbol list with today's top movers from screener."""
         try:
-            from core.scalp_screener import select_symbol_names
-            fresh = select_symbol_names(top_n=max(len(self._universe), 15))
-            if fresh:
-                # add new symbols to state dict; keep existing state for retained symbols
-                for s in fresh:
-                    if s not in self._state:
-                        self._state[s] = _SymState()
-                self.symbols = fresh
+            from core.scalp_screener import select_symbols
+            scored = select_symbols(top_n=max(len(self._universe), 15))
+            if scored:
+                for s in scored:
+                    if s.symbol not in self._state:
+                        self._state[s.symbol] = _SymState()
+                self.symbols = [s.symbol for s in scored]
+                self._symbol_sides = {s.symbol: stock_sides(s.move_pct) for s in scored}
                 logger.info("scalp_paper screener: %d symbols → %s",
-                            len(fresh), fresh[:8])
+                            len(self.symbols),
+                            [(s.symbol, self._symbol_sides[s.symbol]) for s in scored[:4]])
                 return
         except Exception as exc:
             logger.warning("scalp_paper screener failed, keeping universe: %s", exc)
         self.symbols = list(self._universe)
+        self._symbol_sides = {}
 
     def _on_new_day(self, date: str) -> None:
         self._today_date = date
         self._today_trades = []
         self._last_ts.clear()
-        self._spy_bars = pd.DataFrame()   # reset regime buffer for new day
         self._refresh_symbols()
         self._consec_losses  = {s: 0 for s in self.symbols}
         self._blocked_today  = set()
@@ -267,7 +268,6 @@ class ScalpPaperEngine:
 
     def _tick(self) -> None:
         today = _today_et()
-        self._refresh_spy_bars()   # update regime buffer before processing symbols
         for symbol in self.symbols:
             if symbol in self._blocked_today:
                 continue
@@ -280,30 +280,6 @@ class ScalpPaperEngine:
                 self._process_symbol(symbol, df, today)
             except Exception as exc:
                 logger.debug("scalp_paper %s tick error: %s", symbol, exc)
-
-    def _refresh_spy_bars(self) -> None:
-        """Fetch today's RTH SPY 1-min bars from yfinance for regime detection."""
-        try:
-            import yfinance as yf
-            from zoneinfo import ZoneInfo
-            ET = ZoneInfo("America/New_York")
-            raw = yf.download("SPY", period="1d", interval="1m", progress=False)
-            if raw.empty:
-                return
-            if isinstance(raw.columns, pd.MultiIndex):
-                raw.columns = raw.columns.droplevel(1)
-            raw.index = (raw.index.tz_localize("UTC")
-                         if raw.index.tz is None else raw.index.tz_convert("UTC"))
-            et_idx  = raw.index.tz_convert(ET)
-            today   = _today_et()
-            minutes = et_idx.hour * 60 + et_idx.minute
-            date_match = pd.Series(
-                [d.isoformat() for d in et_idx.date], index=raw.index
-            ) == today
-            mask = date_match & (minutes >= 9*60+30) & (minutes <= 15*60+55)
-            self._spy_bars = raw[["Open", "High", "Low", "Close", "Volume"]][mask]
-        except Exception as exc:
-            logger.debug("scalp_paper SPY bars: %s", exc)
 
     def _process_symbol(self, symbol: str, df: pd.DataFrame, today: str) -> None:
         from zoneinfo import ZoneInfo
@@ -454,10 +430,10 @@ class ScalpPaperEngine:
         bb_long_cond  = close_px <= bb_lower
         bb_short_cond = close_px >= bb_upper
 
-        # Regime gate: SPY VWAP determines intraday direction bias.
-        _regime      = spy_regime(self._spy_bars)
-        _allow_long  = params.sides in ("both", "long_only")  and _regime in ("both", "long_only")
-        _allow_short = params.sides in ("both", "short_only") and _regime in ("both", "short_only")
+        # Per-stock direction gate: screener tags each symbol long_only or short_only.
+        _sym_sides   = self._symbol_sides.get(symbol, "both")
+        _allow_long  = params.sides in ("both", "long_only")  and _sym_sides in ("both", "long_only")
+        _allow_short = params.sides in ("both", "short_only") and _sym_sides in ("both", "short_only")
 
         # ── long signal ───────────────────────────────────────────────────
         if (_allow_long

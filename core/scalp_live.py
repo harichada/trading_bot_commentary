@@ -24,7 +24,7 @@ import pandas as pd
 
 from backtest.engine import compute_indicators
 from backtest.scalp_reversal import ScalpParams
-from core.scalp_regime import spy_regime
+from core.scalp_regime import stock_sides
 from core.scalp_shadow import (
     DEFAULT_SHADOW_PARAMS,
     DEFAULT_SYMBOLS,
@@ -33,8 +33,8 @@ from core.scalp_shadow import (
     _today_et,
 )
 
-# Live engine allows both directions; regime detection (SPY VWAP) gates which
-# side is active each bar.  Shadow keeps long_only as its validated baseline.
+# Live engine allows both directions; per-stock daily direction gates which
+# side is active per symbol.  Shadow keeps long_only as its validated baseline.
 from dataclasses import replace as _dc_replace
 LIVE_DEFAULT_PARAMS: ScalpParams = _dc_replace(DEFAULT_SHADOW_PARAMS, sides="both")
 
@@ -136,10 +136,9 @@ class ScalpLiveEngine:
         self._running      = False
         self._lock         = threading.Lock()
         self._seen_bars:    dict[str, int]           = {}   # symbol → last ts_ms seen
-        # SPY bars for intraday regime detection (today's RTH only, reset each day)
-        self._spy_bars:  pd.DataFrame = pd.DataFrame()
-        self._spy_lock   = threading.Lock()
-        self._spy_seen:  int = 0  # last SPY ts_ms seen in poll loop
+        # Per-symbol direction gate: "long_only" | "short_only" | "both"
+        # Set by screener (gainer → short_only, loser → long_only).
+        self._symbol_sides: dict[str, str] = {}
 
     # ── public ────────────────────────────────────────────────────────────
 
@@ -154,28 +153,17 @@ class ScalpLiveEngine:
         secret = (os.getenv("ALPACA_PAPER_SECRET") or os.getenv("ALPACA_SECRET_KEY")) if is_paper \
                  else os.getenv("ALPACA_SECRET_KEY")
 
-        logger.info("scalp_live: seeding %d symbols + SPY from Alpaca…", len(self.symbols))
+        logger.info("scalp_live: seeding %d symbols from Alpaca…", len(self.symbols))
         self._history = _seed_from_alpaca(self.symbols, key, secret)
         logger.info("scalp_live: seeded %d/%d symbols", len(self._history), len(self.symbols))
-
-        # Seed today's SPY bars for the initial VWAP regime reading
-        spy_seed = _seed_from_alpaca(["SPY"], key, secret)
-        all_spy = spy_seed.get("SPY", pd.DataFrame())
-        if not all_spy.empty:
-            et_idx = all_spy.index.tz_convert(_ET)
-            today_dt = pd.Timestamp(_today_et()).tz_localize(_ET).date()
-            self._spy_bars = all_spy[et_idx.date == today_dt]
-            logger.info("scalp_live: SPY seed — %d today bars, regime=%s",
-                        len(self._spy_bars), spy_regime(self._spy_bars))
 
         # Register with Schwab stream if available (fires first when healthy)
         try:
             from core.schwab_bar_cache import SchwabBarCache
             cache = SchwabBarCache.instance()
             cache.register_bar_callback(self._on_bar)
-            # Include SPY so the stream delivers regime bars in real time
-            cache.request_chart_symbols(set(self.symbols) | {"SPY"})
-            logger.info("scalp_live: stream callback registered, requested CHART_EQUITY for %d symbols + SPY",
+            cache.request_chart_symbols(set(self.symbols))
+            logger.info("scalp_live: stream callback registered, requested CHART_EQUITY for %d symbols",
                         len(self.symbols))
         except Exception as exc:
             logger.warning("scalp_live: stream callback failed: %s", exc)
@@ -224,12 +212,7 @@ class ScalpLiveEngine:
     def _on_bar(self, symbol: str, ts_ms: int,
                 open_: float, high: float, low: float,
                 close: float, volume: float) -> None:
-        if not self._running:
-            return
-        if symbol == "SPY":
-            self._update_spy_bar(ts_ms, open_, high, low, close, volume)
-            return
-        if symbol not in self.symbols:
+        if not self._running or symbol not in self.symbols:
             return
         # Run in thread so we don't block the stream handler
         threading.Thread(
@@ -237,24 +220,6 @@ class ScalpLiveEngine:
             args=(symbol, ts_ms, open_, high, low, close, volume),
             daemon=True,
         ).start()
-
-    def _update_spy_bar(self, ts_ms: int, open_: float, high: float,
-                        low: float, close: float, volume: float) -> None:
-        """Append a SPY 1-min bar to the today-only regime buffer."""
-        ts_utc = pd.Timestamp(ts_ms / 1000.0, unit="s", tz="UTC")
-        bar_et = ts_utc.tz_convert(_ET)
-        # Only keep today's RTH bars
-        bar_min = bar_et.hour * 60 + bar_et.minute
-        if bar_min < 9 * 60 + 30 or bar_min > 15 * 60 + 55:
-            return
-        new_row = pd.DataFrame(
-            [{"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume}],
-            index=pd.DatetimeIndex([ts_utc]),
-        )
-        with self._spy_lock:
-            if not self._spy_bars.empty and ts_utc in self._spy_bars.index:
-                return
-            self._spy_bars = pd.concat([self._spy_bars, new_row]).iloc[-400:]
 
     def _process_bar(self, symbol: str, ts_ms: int,
                      open_: float, high: float, low: float,
@@ -368,13 +333,11 @@ class ScalpLiveEngine:
 
             p = self.params
 
-            # Regime gate: SPY VWAP determines intraday direction bias.
-            # params.sides is the outer (admin) gate; regime is the inner (dynamic) gate.
-            with self._spy_lock:
-                _spy_snap = self._spy_bars.copy() if not self._spy_bars.empty else pd.DataFrame()
-            _regime      = spy_regime(_spy_snap)
-            _allow_long  = p.sides in ("both", "long_only")  and _regime in ("both", "long_only")
-            _allow_short = p.sides in ("both", "short_only") and _regime in ("both", "short_only")
+            # Per-stock direction gate: screener tags each symbol as long_only or
+            # short_only based on its daily move (gainer → short, loser → long).
+            _sym_sides   = self._symbol_sides.get(symbol, "both")
+            _allow_long  = p.sides in ("both", "long_only")  and _sym_sides in ("both", "long_only")
+            _allow_short = p.sides in ("both", "short_only") and _sym_sides in ("both", "short_only")
 
             if (_allow_long
                     and self._long_cd.get(symbol, 0) == 0
@@ -501,9 +464,8 @@ class ScalpLiveEngine:
             try:
                 end   = datetime.now(timezone.utc)
                 start = end - timedelta(minutes=5)
-                poll_syms = list(self.symbols) + ["SPY"]
                 req = StockBarsRequest(
-                    symbol_or_symbols=poll_syms,
+                    symbol_or_symbols=self.symbols,
                     timeframe=TimeFrame.Minute,
                     start=start,
                     end=end,
@@ -512,17 +474,6 @@ class ScalpLiveEngine:
                 bars = data_client.get_stock_bars(req)
                 raw  = bars.df  # MultiIndex (symbol, ts)
                 lvl0 = raw.index.get_level_values(0)
-
-                # Update SPY regime buffer from poll
-                if "SPY" in lvl0:
-                    for idx, row in raw.loc["SPY"].iterrows():
-                        ts_ms = int(idx.timestamp() * 1000)
-                        if ts_ms != self._spy_seen:
-                            self._spy_seen = ts_ms
-                            self._update_spy_bar(ts_ms,
-                                float(row["open"]), float(row["high"]),
-                                float(row["low"]),  float(row["close"]),
-                                float(row["volume"]))
 
                 for sym in self.symbols:
                     if sym not in lvl0:
@@ -551,31 +502,31 @@ class ScalpLiveEngine:
     def _refresh_symbols(self) -> None:
         """Replace active symbol list with today's top movers from screener."""
         try:
-            from core.scalp_screener import select_symbol_names
-            fresh = select_symbol_names(top_n=max(len(self._universe), 15))
-            if fresh:
-                self.symbols = fresh
+            from core.scalp_screener import select_symbols
+            from core.scalp_regime import stock_sides
+            scored = select_symbols(top_n=max(len(self._universe), 15))
+            if scored:
+                self.symbols = [s.symbol for s in scored]
+                self._symbol_sides = {s.symbol: stock_sides(s.move_pct) for s in scored}
                 logger.info("scalp_live screener: %d symbols → %s",
-                            len(fresh), fresh[:8])
+                            len(self.symbols),
+                            [(s.symbol, self._symbol_sides[s.symbol]) for s in scored[:4]])
                 return
         except Exception as exc:
             logger.warning("scalp_live screener failed, keeping universe: %s", exc)
         self.symbols = list(self._universe)
+        self._symbol_sides = {}   # no direction gate for static universe
 
     def _on_new_day(self, date: str) -> None:
         self._today_date    = date
         self._today_trades  = []
         self._refresh_symbols()
-        # Reset SPY regime buffer for the new trading day
-        with self._spy_lock:
-            self._spy_bars = pd.DataFrame()
-        self._spy_seen = 0
 
-        # Update Schwab CHART_EQUITY subscriptions for today's symbol list (+ SPY)
+        # Update Schwab CHART_EQUITY subscriptions for today's symbol list
         try:
             from core.schwab_bar_cache import SchwabBarCache
-            SchwabBarCache.instance().request_chart_symbols(set(self.symbols) | {"SPY"})
-            logger.info("scalp_live: updated CHART_EQUITY request for %d symbols + SPY", len(self.symbols))
+            SchwabBarCache.instance().request_chart_symbols(set(self.symbols))
+            logger.info("scalp_live: updated CHART_EQUITY request for %d symbols", len(self.symbols))
         except Exception:
             pass
         self._bar_count     = {s: 0 for s in self.symbols}
