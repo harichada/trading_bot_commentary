@@ -31,13 +31,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 NDJSON_PATH = _REPO_ROOT / "data" / "shadow_scalp_reversal.ndjson"
 STATE_PATH  = _REPO_ROOT / "data" / "shadow_scalp_state.json"
 
-# Default parameters (updated 2026-11-19: longs-only, matched to backtest)
+# Default parameters (updated 2026-11-24: both sides + per-stock direction gate)
 DEFAULT_SHADOW_PARAMS = ScalpParams(
     rsi_long_thresh=45.0,
     rsi_short_thresh=60.0,
     vol_min=1.0,
-    atr_stop_mult=1.5,
-    atr_target_mult=6.0,
+    atr_stop_mult=2.0,
+    atr_target_mult=3.0,
     quick_exit_bars=10,
     min_profit_pct=0.15,
     max_hold_bars=5,
@@ -46,17 +46,18 @@ DEFAULT_SHADOW_PARAMS = ScalpParams(
     candle_wick_ratio=1.5,
     entry_confirm=False,
     rsi_turn=False,
-    sides="long_only",
+    sides="both",
+    direction_gate=True,
     from_open_drop_max=0.0,
 )
 
 DEFAULT_SYMBOLS = [
-    "NVDA", "TSLA", "AMD", "QQQ", "SMCI", "IREN", "MU",
-    "SNAP", "LCID", "PURR", "POET", "CIFR", "RIVN", "NBIS",
-    "BE", "MRNA", "NOK", "MARA", "AAL",
+    "NVDA", "TSLA", "QQQ", "SMCI", "IREN", "MU",
+    "SNAP", "LCID", "PURR", "POET", "RIVN", "NBIS",
+    "NOK", "AAL",
 ]
 
-SLOT_SIZE_USD = 50_000
+SLOT_SIZE_USD = 10_000
 
 
 def _now_et() -> datetime:
@@ -108,6 +109,9 @@ class ScalpShadowEngine:
         # today's completed trades (in-memory cache, flushed at day start)
         self._today_trades: list[dict] = []
         self._today_date: str = ""
+        # 3 consecutive losses → block symbol for the rest of the day
+        self._consec_losses: dict[str, int] = {s: 0 for s in symbols}
+        self._blocked_today: set[str] = set()
 
         self._task: asyncio.Task | None = None
         self._load_state()
@@ -162,6 +166,7 @@ class ScalpShadowEngine:
             "is_rth": _is_rth(),
             "params": asdict(self.params),
             "symbols": self.symbols,
+            "blocked_today": sorted(self._blocked_today),
             "slot_size": self.slot_size,
             "max_slots": self.max_slots,
             "summary": {
@@ -200,7 +205,21 @@ class ScalpShadowEngine:
         self._open = {s: None for s in self.symbols}
         self._today_trades = [t for t in self._today_trades if t["date"] == date]
         self._logged_intervals = []  # reset slot timeline for the new day
+        self._consec_losses = {s: 0 for s in self.symbols}
+        self._blocked_today = set()
         logger.info("scalp_shadow new day %s", date)
+
+    def _record_loss_streak(self, symbol: str, dollar_pnl: float) -> None:
+        if dollar_pnl < 0:
+            self._consec_losses[symbol] = self._consec_losses.get(symbol, 0) + 1
+            if self._consec_losses[symbol] >= 3:
+                self._blocked_today.add(symbol)
+                logger.info(
+                    "scalp_shadow %s blocked for today (3 consecutive losses)",
+                    symbol,
+                )
+        else:
+            self._consec_losses[symbol] = 0
 
     def _tick(self) -> None:
         """Load all symbols, replay each independently, then apply global slot cap
@@ -210,6 +229,8 @@ class ScalpShadowEngine:
         loaded: dict[str, object] = {}  # symbol → DataFrame
 
         for symbol in self.symbols:
+            if symbol in self._blocked_today:
+                continue
             try:
                 df = load_bars(symbol, days=5, dsn=self.dsn)
                 if df.empty or len(df) < 51:
@@ -267,6 +288,7 @@ class ScalpShadowEngine:
             record = self._trade_to_record(trade, today)
             self._append_ndjson(record)
             self._today_trades.append(record)
+            self._record_loss_streak(trade.symbol, record["dollar_pnl"])
             logger.info(
                 "scalp_shadow logged %s %s entry=%s exit=%s pnl=%.2f",
                 trade.symbol, trade.side, _iso(trade.entry_time),
