@@ -203,9 +203,11 @@ class ScalpPaperEngine:
 
     def _refresh_symbols(self) -> None:
         """Replace active symbol list with today's top movers from screener."""
+        from core.scalp_shadow import EXCLUDED_SYMBOLS
         try:
             from core.scalp_screener import select_symbols
-            scored = select_symbols(top_n=max(len(self._universe), 15))
+            scored = [s for s in select_symbols(top_n=max(len(self._universe), 15))
+                      if s.symbol not in EXCLUDED_SYMBOLS]
             if scored:
                 for s in scored:
                     if s.symbol not in self._state:
@@ -218,7 +220,7 @@ class ScalpPaperEngine:
                 return
         except Exception as exc:
             logger.warning("scalp_paper screener failed, keeping universe: %s", exc)
-        self.symbols = list(self._universe)
+        self.symbols = [s for s in self._universe if s not in EXCLUDED_SYMBOLS]
         self._symbol_sides = {}
 
     def _on_new_day(self, date: str) -> None:

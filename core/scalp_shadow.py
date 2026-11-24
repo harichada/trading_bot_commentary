@@ -59,6 +59,9 @@ DEFAULT_SYMBOLS = [
 
 SLOT_SIZE_USD = 33_333  # 100K / 3 slots
 
+# Symbols permanently excluded from the universe (consistent backtest losers)
+EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"NVDA", "TSLA", "ANF", "DY"})
+
 
 def _now_et() -> datetime:
     from zoneinfo import ZoneInfo
