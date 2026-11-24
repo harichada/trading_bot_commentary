@@ -66,6 +66,12 @@ class ScalpParams:
     cooldown_bars: int = 0
     # Side filter: "both" | "long_only" | "short_only"
     sides: str = "both"
+    # Per-stock daily direction gate: gainer (open > prev close) → short_only;
+    # loser (open < prev close) → long_only. Mirrors the live screener logic:
+    # buy panic (oversold losers), sell euphoria (overbought gainers).
+    # Intersected with `sides` — e.g. sides=long_only + direction_gate on a
+    # gainer day → no trades that day.
+    direction_gate: bool = False
     # From-open drop gate: skip long signals when price has fallen more than this
     # percentage below the RTH session open. 0 = disabled.
     # E.g. 1.5 → skip longs once stock is down >1.5% from open (falling-knife filter).
@@ -148,8 +154,10 @@ def load_bars(symbol: str, days: int, dsn: str, end_date: str | None = None) -> 
             hist = hist[mask]
         if hist.empty:
             return hist
-        end_cutoff = pd.Timestamp(end_date, tz="UTC")
-        start_cutoff = end_cutoff - pd.Timedelta(days=days)
+        # Include all bars on the end_date day (treat as end-of-day, not midnight)
+        end_cutoff = pd.Timestamp(end_date, tz="America/New_York") + pd.Timedelta(days=1)
+        end_cutoff = end_cutoff.tz_convert("UTC")
+        start_cutoff = end_cutoff - pd.Timedelta(days=days + 1)
         sliced = hist[(hist.index >= start_cutoff) & (hist.index < end_cutoff)]
         return sliced[~sliced.index.duplicated(keep="last")]
 
@@ -240,6 +248,9 @@ def replay_symbol_scalp(
     day_bar_count: dict = {}
     # Per-day RTH open price (first bar's Open in the session).
     rth_open: dict = {}
+    # Per-day direction gate result: "long_only" | "short_only" | "both"
+    # Populated at the start of each session when direction_gate=True.
+    day_direction: dict = {}
 
     required = {"rsi", "macd", "macd_signal", "bb_lower", "bb_middle",
                 "bb_upper", "atr", "adx", "sma_20", "sma_50",
@@ -259,6 +270,17 @@ def replay_symbol_scalp(
             pending_long = None
             pending_short = None
             rth_open[bar_date] = float(bar["Open"])
+            # Per-stock direction gate: compare today's RTH open to prior day's last close.
+            # Gainer (open > prev close) → short_only; loser → long_only.
+            if params.direction_gate and i > 0:
+                prev_close_px = float(df.iloc[i - 1]["Close"])
+                today_open_px = float(bar["Open"])
+                _move = (today_open_px - prev_close_px) / prev_close_px if prev_close_px > 0 else 0
+                day_direction[bar_date] = (
+                    "short_only" if _move > 0 else ("long_only" if _move < 0 else "both")
+                )
+            else:
+                day_direction[bar_date] = "both"  # gate inactive; params.sides handles it
         if day_bar_count[bar_date] <= 15:
             # Skip first 15 bars of each session (RSI instability at open).
             # Still flush EOD for any position open at day boundary.
@@ -482,8 +504,13 @@ def replay_symbol_scalp(
             and from_open_pct < -params.from_open_drop_max
         )
 
+        # Direction gate intersection: params.sides (admin) ∩ day_direction (per-stock).
+        _ddir = day_direction.get(bar_date, "both")
+        _allow_long  = params.sides in ("both", "long_only")  and _ddir in ("both", "long_only")
+        _allow_short = params.sides in ("both", "short_only") and _ddir in ("both", "short_only")
+
         # --- Long signal ---
-        if (params.sides in ("both", "long_only")
+        if (_allow_long
                 and open_long is None
                 and pending_long is None
                 and long_cd == 0
@@ -506,7 +533,7 @@ def replay_symbol_scalp(
                 }
 
         # --- Short signal ---
-        if (params.sides in ("both", "short_only")
+        if (_allow_short
                 and open_short is None
                 and pending_short is None
                 and short_cd == 0
@@ -622,6 +649,57 @@ def _load_and_replay(
         return []
 
 
+def _filter_consec_losses(
+    trades: list[Trade],
+    slot_size: float,
+    max_consec: int = 3,
+) -> list[Trade]:
+    """Per-symbol: once a symbol accumulates max_consec consecutive losing
+    trades on a given day, all subsequent same-day entries are dropped.
+    Consecutive count resets to 0 on any winning trade.
+
+    Within a single symbol there is no position overlap, so entry order
+    equals exit order — a plain single-pass sort by entry_time is correct.
+    """
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+
+    # Group by symbol for independent per-symbol processing.
+    by_sym: dict[str, list[Trade]] = {}
+    for t in trades:
+        by_sym.setdefault(t.symbol, []).append(t)
+
+    result: list[Trade] = []
+    for sym_trades in by_sym.values():
+        consec: dict[str, int] = {}   # date → consecutive loss count
+        blocked: dict[str, bool] = {} # date → blocked flag
+
+        for trade in sorted(sym_trades, key=lambda t: t.entry_time):
+            entry_et = trade.entry_time
+            if hasattr(entry_et, "tz_convert"):
+                entry_et = entry_et.tz_convert(_ET)
+            date = entry_et.date().isoformat()
+
+            if blocked.get(date):
+                continue
+
+            result.append(trade)
+
+            # Update consecutive loss count using this trade's P&L.
+            direction = 1 if trade.side == "long" else -1
+            shares = max(1, int(slot_size / trade.entry_price)) if trade.entry_price > 0 else 1
+            pnl = shares * (trade.exit_price - trade.entry_price) * direction
+
+            if pnl < 0:
+                consec[date] = consec.get(date, 0) + 1
+                if consec[date] >= max_consec:
+                    blocked[date] = True
+            else:
+                consec[date] = 0
+
+    return result
+
+
 def run(
     symbols: list[str] | None = None,
     days: int = 90,
@@ -647,6 +725,9 @@ def run(
         }
         for fut in as_completed(futures):
             all_trades.extend(fut.result())
+
+    # Drop same-day entries after 3 consecutive losses per symbol.
+    all_trades = _filter_consec_losses(all_trades, slot_size)
 
     executed = allocate_slots(all_trades, max_slots)
 

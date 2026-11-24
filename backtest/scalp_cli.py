@@ -78,6 +78,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Postgres DSN (default: env POSTGRES_DSN or project default)")
     p.add_argument("--out", default="research/reports/scalp",
                    help="Output directory for JSON report (default: %(default)s)")
+    p.add_argument("--sides", default="both",
+                   choices=["both", "long_only", "short_only"],
+                   help="Which signal sides to trade (default: %(default)s)")
+    p.add_argument("--end-date", default=None, dest="end_date",
+                   metavar="YYYY-MM-DD",
+                   help="End date for backtest window (default: today). "
+                        "Use with --days for out-of-sample testing.")
+    p.add_argument("--from-open-drop-max", type=float, default=0.0,
+                   dest="from_open_drop_max",
+                   help="Skip long signals when stock is down > this %% from RTH open "
+                        "(0 = disabled, e.g. 1.5 blocks longs after a 1.5%% drop from open)")
+    p.add_argument("--direction-gate", action="store_true", default=False,
+                   dest="direction_gate",
+                   help="Per-stock daily direction gate: gainer (open > prev close) → "
+                        "short_only; loser → long_only. Mirrors live screener logic.")
     return p.parse_args(argv)
 
 
@@ -159,6 +174,9 @@ def main(argv: list[str] | None = None) -> None:
         candle_wick_ratio=args.candle_wick_ratio,
         entry_confirm=args.entry_confirm,
         rsi_turn=args.rsi_turn,
+        sides=args.sides,
+        direction_gate=args.direction_gate,
+        from_open_drop_max=args.from_open_drop_max,
     )
     report = run(
         symbols=args.symbols,
@@ -167,6 +185,7 @@ def main(argv: list[str] | None = None) -> None:
         dsn=args.dsn,
         max_slots=args.max_slots,
         capital_usd=args.capital,
+        end_date=args.end_date,
     )
     _print_summary(report)
 
