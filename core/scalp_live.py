@@ -122,6 +122,7 @@ class ScalpLiveEngine:
         self._history:      dict[str, pd.DataFrame] = {}
         self._bar_count:    dict[str, int]           = {s: 0 for s in symbols}
         self._open:         dict[str, dict]          = {}
+        self._pending:      set[str]                 = set()
         self._long_cd:      dict[str, int]           = {s: 0 for s in symbols}
         self._short_cd:     dict[str, int]           = {s: 0 for s in symbols}
         self._consec:           dict[str, int]           = {s: 0 for s in symbols}
@@ -302,7 +303,9 @@ class ScalpLiveEngine:
                 return
 
             # ── entry signal ──────────────────────────────────────────────
-            if is_eod or len(self._open) >= self.max_slots:
+            if is_eod or symbol in self._pending or symbol in self._open:
+                return
+            if len(self._open) + len(self._pending) >= self.max_slots:
                 return
 
             atr       = float(ind_row["atr"])
@@ -373,6 +376,7 @@ class ScalpLiveEngine:
                      else entry_px + atr * self.params.atr_stop_mult)
         target_px = (entry_px + atr * self.params.atr_target_mult if side == "long"
                      else entry_px - atr * self.params.atr_target_mult)
+        self._pending.add(symbol)
         try:
             order = self._client.submit_order(MarketOrderRequest(
                 symbol=symbol, qty=shares,
@@ -381,8 +385,10 @@ class ScalpLiveEngine:
             ))
         except Exception as exc:
             logger.error("scalp_live ENTRY FAILED %s: %s", symbol, exc)
+            self._pending.discard(symbol)
             return
 
+        self._pending.discard(symbol)
         self._open[symbol] = {
             "symbol":     symbol,
             "side":       side,
@@ -520,6 +526,7 @@ class ScalpLiveEngine:
     def _on_new_day(self, date: str) -> None:
         self._today_date    = date
         self._today_trades  = []
+        self._pending.clear()
         self._refresh_symbols()
 
         # Update Schwab CHART_EQUITY subscriptions for today's symbol list
