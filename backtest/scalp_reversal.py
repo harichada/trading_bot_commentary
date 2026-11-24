@@ -64,6 +64,10 @@ class ScalpParams:
     # this many bars. Eliminates cascade re-entries without filtering the first signal.
     # 0 = disabled (default). 5–15 covers the typical cascade window.
     cooldown_bars: int = 0
+    # Minimum stop distance as a fraction of entry price (e.g. 0.0015 = 0.15%).
+    # Prevents sub-noise stops on high-priced stocks where 0.5×ATR(1min) is tiny.
+    # 0.0 = disabled (default, use pure ATR).
+    min_stop_pct: float = 0.0
     # Side filter: "both" | "long_only" | "short_only"
     sides: str = "both"
     # Per-stock daily direction gate: gainer (open > prev close) → short_only;
@@ -148,12 +152,18 @@ def load_bars(
         fetch_days = days + 60
         period_type = "day" if fetch_days < 30 else "month"
         period = fetch_days if period_type == "day" else max(1, fetch_days // 30)
+        # Pass end explicitly so the provider anchors the window at end_date,
+        # not at now() — without this, historical end_dates outside the last
+        # N months return empty data.
+        import pandas as _pd
+        _end_dt = _pd.Timestamp(end_date, tz="UTC") + _pd.Timedelta(days=1)
         hist = provider.get_market_data(
             symbol,
             period_type=period_type,
             period=period,
             frequency_type="minute",
             frequency=bar_minutes,
+            end=_end_dt,
         )
         if not hist.empty:
             hist = hist[~hist.index.duplicated(keep="last")]
@@ -423,7 +433,7 @@ def replay_symbol_scalp(
                 atr_p = pending_long["atr"]
                 open_long = {
                     "entry": close_px,
-                    "stop": close_px - atr_p * params.atr_stop_mult,
+                    "stop": close_px - max(atr_p * params.atr_stop_mult, close_px * params.min_stop_pct),
                     "target": close_px + atr_p * params.atr_target_mult,
                     "entry_time": bar_ts,
                     "hold": 0,
@@ -436,7 +446,7 @@ def replay_symbol_scalp(
                 atr_p = pending_short["atr"]
                 open_short = {
                     "entry": close_px,
-                    "stop": close_px + atr_p * params.atr_stop_mult,
+                    "stop": close_px + max(atr_p * params.atr_stop_mult, close_px * params.min_stop_pct),
                     "target": close_px - atr_p * params.atr_target_mult,
                     "entry_time": bar_ts,
                     "hold": 0,
@@ -537,7 +547,7 @@ def replay_symbol_scalp(
             else:
                 open_long = {
                     "entry": close_px,
-                    "stop": close_px - atr * params.atr_stop_mult,
+                    "stop": close_px - max(atr * params.atr_stop_mult, close_px * params.min_stop_pct),
                     "target": close_px + atr * params.atr_target_mult,
                     "entry_time": bar_ts,
                     "hold": 0,
@@ -559,7 +569,7 @@ def replay_symbol_scalp(
             else:
                 open_short = {
                     "entry": close_px,
-                    "stop": close_px + atr * params.atr_stop_mult,
+                    "stop": close_px + max(atr * params.atr_stop_mult, close_px * params.min_stop_pct),
                     "target": close_px - atr * params.atr_target_mult,
                     "entry_time": bar_ts,
                     "hold": 0,
@@ -708,6 +718,53 @@ def _filter_consec_losses(
                     blocked[date] = True
             else:
                 consec[date] = 0
+
+    return result
+
+
+def _filter_sym_loss_limit(
+    trades: list[Trade],
+    slot_size: float,
+    loss_limit_usd: float,
+) -> list[Trade]:
+    """Per-symbol daily loss cap: once a symbol's cumulative net P&L on a given
+    day drops below -loss_limit_usd, all subsequent entries that day are skipped.
+    Uses the same slot_size-based share count as _filter_consec_losses.
+    0.0 = disabled (pass-through).
+    """
+    if loss_limit_usd <= 0:
+        return trades
+
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+
+    by_sym: dict[str, list[Trade]] = {}
+    for t in trades:
+        by_sym.setdefault(t.symbol, []).append(t)
+
+    result: list[Trade] = []
+    for sym_trades in by_sym.values():
+        day_pnl: dict[str, float] = {}
+        blocked: dict[str, bool] = {}
+
+        for trade in sorted(sym_trades, key=lambda t: t.entry_time):
+            entry_et = trade.entry_time
+            if hasattr(entry_et, "tz_convert"):
+                entry_et = entry_et.tz_convert(_ET)
+            date = entry_et.date().isoformat()
+
+            if blocked.get(date):
+                continue
+
+            result.append(trade)
+
+            direction = 1 if trade.side == "long" else -1
+            shares = max(1, int(slot_size / trade.entry_price)) if trade.entry_price > 0 else 1
+            pnl = shares * (trade.exit_price - trade.entry_price) * direction
+            day_pnl[date] = day_pnl.get(date, 0.0) + pnl
+
+            if day_pnl[date] < -loss_limit_usd:
+                blocked[date] = True
 
     return result
 
