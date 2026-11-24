@@ -31,12 +31,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 NDJSON_PATH = _REPO_ROOT / "data" / "shadow_scalp_reversal.ndjson"
 STATE_PATH  = _REPO_ROOT / "data" / "shadow_scalp_state.json"
 
-# Default parameters (updated 2026-11-24: both sides + per-stock direction gate)
+# Default parameters (updated 2026-11-24: max_hold=5, atr_stop=0.5, both+direction_gate)
 DEFAULT_SHADOW_PARAMS = ScalpParams(
     rsi_long_thresh=45.0,
     rsi_short_thresh=60.0,
     vol_min=1.0,
-    atr_stop_mult=2.0,
+    atr_stop_mult=0.5,
     atr_target_mult=3.0,
     quick_exit_bars=10,
     min_profit_pct=0.15,
@@ -57,7 +57,7 @@ DEFAULT_SYMBOLS = [
     "NOK", "AAL",
 ]
 
-SLOT_SIZE_USD = 10_000
+SLOT_SIZE_USD = 33_333  # 100K / 3 slots
 
 
 def _now_et() -> datetime:
@@ -88,7 +88,7 @@ class ScalpShadowEngine:
         dsn: str = DEFAULT_DSN,
         slot_size: int = SLOT_SIZE_USD,
         tick_interval: int = 60,
-        max_slots: int = 2,
+        max_slots: int = 3,
     ) -> None:
         self.symbols = symbols
         self.params = params

@@ -78,7 +78,7 @@ class ScalpPaperEngine:
         dsn: str = DEFAULT_DSN,
         slot_size: int = SLOT_SIZE_USD,
         tick_interval: int = 60,
-        max_slots: int = 2,
+        max_slots: int = 3,
     ) -> None:
         self._universe = symbols
         self.symbols   = list(symbols)
