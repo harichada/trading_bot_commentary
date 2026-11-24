@@ -91,6 +91,8 @@ class ScalpPaperEngine:
         self._state: dict[str, _SymState] = {s: _SymState() for s in symbols}
         # symbol → {side, entry_px, stop_px, target_px, entry_time, qty, hold}
         self._open: dict[str, dict] = {}
+        # symbols with an order submitted but not yet confirmed in _open
+        self._pending: set[str] = set()
         # symbol → last processed bar timestamp
         self._last_ts: dict[str, Any] = {}
         self._today_trades: list[dict] = []
@@ -227,6 +229,7 @@ class ScalpPaperEngine:
         self._today_date = date
         self._today_trades = []
         self._last_ts.clear()
+        self._pending.clear()
         self._refresh_symbols()
         self._consec_losses  = {s: 0 for s in self.symbols}
         self._blocked_today  = set()
@@ -383,10 +386,10 @@ class ScalpPaperEngine:
                 self._close(symbol, pos, reason, exit_px, bar_ts, today)
                 return
 
-        # ── skip signal: warm-up / EOD / position already open ────────────
-        if state.day_bar_count <= 15 or is_eod or symbol in self._open:
+        # ── skip signal: warm-up / EOD / position already open/pending ──────
+        if state.day_bar_count <= 15 or is_eod or symbol in self._open or symbol in self._pending:
             return
-        if len(self._open) >= self.max_slots:
+        if len(self._open) + len(self._pending) >= self.max_slots:
             return
 
         # ── cooldown ──────────────────────────────────────────────────────
@@ -512,6 +515,7 @@ class ScalpPaperEngine:
                      else entry_px + atr * self.params.atr_stop_mult)
         target_px = (entry_px + atr * self.params.atr_target_mult if side == "long"
                      else entry_px - atr * self.params.atr_target_mult)
+        self._pending.add(symbol)
         try:
             req = MarketOrderRequest(
                 symbol=symbol,
@@ -523,8 +527,10 @@ class ScalpPaperEngine:
             order_id = str(order.id)
         except Exception as exc:
             logger.error("scalp_paper ENTRY FAILED %s %s: %s", symbol, side, exc)
+            self._pending.discard(symbol)
             return
 
+        self._pending.discard(symbol)
         self._open[symbol] = {
             "side":       side,
             "entry_px":   round(entry_px, 4),
