@@ -45,6 +45,26 @@ class SchwabBarCache:
         # symbol → { chart_time_millis: {open, high, low, close, volume} }
         self._bars: dict[str, dict[int, dict]] = {}
         self._rw_lock = threading.Lock()
+        self._callbacks: list = []  # fn(symbol, ts_ms, open_, high, low, close, volume)
+        self._chart_requested: set[str] = set()
+
+    def register_bar_callback(self, fn) -> None:
+        """Register a function called immediately when a NEW bar key arrives."""
+        self._callbacks.append(fn)
+
+    def request_chart_symbols(self, symbols: set[str]) -> None:
+        """Tell the Schwab stream to subscribe CHART_EQUITY for these symbols.
+
+        Called by the scalp engine when its symbol list is set or refreshed.
+        The stream's reconcile loop merges this set into its desired subscriptions.
+        """
+        with self._rw_lock:
+            self._chart_requested = set(symbols)
+
+    def chart_requested_symbols(self) -> set[str]:
+        """Return symbols explicitly requested for CHART_EQUITY by scalp engines."""
+        with self._rw_lock:
+            return set(self._chart_requested)
 
     # ── write ──────────────────────────────────────────────────────────
 
@@ -54,15 +74,22 @@ class SchwabBarCache:
         """Store or update a single 1-min bar. Called from stream handler."""
         with self._rw_lock:
             sym_bars = self._bars.setdefault(symbol, {})
+            is_new = chart_time_millis not in sym_bars
             sym_bars[chart_time_millis] = {
                 "open": open_, "high": high, "low": low,
                 "close": close, "volume": volume,
             }
-            # Trim to the most recent N bars (by key order).
             if len(sym_bars) > _MAX_BARS_PER_SYMBOL:
                 oldest = sorted(sym_bars)[:len(sym_bars) - _MAX_BARS_PER_SYMBOL]
                 for k in oldest:
                     del sym_bars[k]
+
+        if is_new and self._callbacks:
+            for fn in self._callbacks:
+                try:
+                    fn(symbol, chart_time_millis, open_, high, low, close, volume)
+                except Exception:
+                    pass
 
     # ── read ───────────────────────────────────────────────────────────
 

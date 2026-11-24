@@ -5,7 +5,7 @@ Same 60-second poll cadence as the shadow loop. Each tick:
   2. For bars newer than last-processed, run incremental signal detection.
   3. On signal: submit a market order via Alpaca paper TradingClient.
   4. For open positions: check stop / target / quick_profit / timeout / EOD.
-  5. Close via Alpaca when any exit condition triggers.
+  5. Close via market order when any exit condition triggers.
 
 Completed trades → data/paper_scalp_reversal.ndjson
 """
@@ -24,6 +24,8 @@ import pandas as pd
 
 from backtest.engine import DEFAULT_DSN, compute_indicators
 from backtest.scalp_reversal import ScalpParams, load_bars
+from core.scalp_live import LIVE_DEFAULT_PARAMS
+from core.scalp_regime import spy_regime
 from core.scalp_shadow import (
     DEFAULT_SHADOW_PARAMS,
     DEFAULT_SYMBOLS,
@@ -72,15 +74,16 @@ class ScalpPaperEngine:
     def __init__(
         self,
         symbols: list[str] = DEFAULT_SYMBOLS,
-        params: ScalpParams = DEFAULT_SHADOW_PARAMS,
+        params: ScalpParams = LIVE_DEFAULT_PARAMS,
         dsn: str = DEFAULT_DSN,
         slot_size: int = SLOT_SIZE_USD,
         tick_interval: int = 60,
         max_slots: int = 2,
     ) -> None:
-        self.symbols = symbols
-        self.params = params
-        self.dsn = dsn
+        self._universe = symbols
+        self.symbols   = list(symbols)
+        self.params    = params
+        self.dsn       = dsn
         self.slot_size = slot_size
         self.tick_interval = tick_interval
         self.max_slots = max_slots
@@ -94,6 +97,15 @@ class ScalpPaperEngine:
         self._today_date: str = ""
         self._task: asyncio.Task | None = None
         self._client = None   # TradingClient, created lazily
+        # 3 consecutive losses → block symbol for the rest of the day
+        self._consec_losses: dict[str, int] = {s: 0 for s in symbols}
+        self._blocked_today: set[str] = set()
+        self._daily_pnl:       dict[str, float] = {s: 0.0 for s in symbols}
+        self._caution_syms:    set[str]         = set()   # tier-1: gate required + half size
+        self.loss_caution_usd: float            = 150.0
+        self.loss_block_usd:   float            = 300.0
+        # Today's SPY 1-min bars for intraday regime detection (reset each day)
+        self._spy_bars: pd.DataFrame = pd.DataFrame()
 
     # ── public ────────────────────────────────────────────────────────────
 
@@ -117,7 +129,13 @@ class ScalpPaperEngine:
             "is_rth": _is_rth(),
             "running": self._task is not None and not self._task.done(),
             "params": asdict(self.params),
-            "symbols": self.symbols,
+            "symbols":        self._universe,
+            "active_symbols": self.symbols,
+            "blocked_today":             sorted(self._blocked_today),
+            "daily_pnl_by_symbol": {s: round(v, 2) for s, v in self._daily_pnl.items() if v != 0.0},
+            "caution_symbols":     sorted(self._caution_syms - self._blocked_today),
+            "loss_caution_usd":    self.loss_caution_usd,
+            "loss_block_usd":      self.loss_block_usd,
             "slot_size": self.slot_size,
             "max_slots": self.max_slots,
             "summary": {
@@ -162,37 +180,97 @@ class ScalpPaperEngine:
     def _make_client(self):
         try:
             from alpaca.trading.client import TradingClient
-            key    = os.getenv("ALPACA_PAPER_KEY")    or os.getenv("ALPACA_API_KEY")
-            secret = os.getenv("ALPACA_PAPER_SECRET") or os.getenv("ALPACA_SECRET_KEY")
+            is_paper = os.getenv("ALPACA_PAPER", "true").lower() not in ("false", "0", "no")
+            if is_paper:
+                key    = os.getenv("ALPACA_PAPER_KEY")    or os.getenv("ALPACA_API_KEY")
+                secret = os.getenv("ALPACA_PAPER_SECRET") or os.getenv("ALPACA_SECRET_KEY")
+            else:
+                key    = os.getenv("ALPACA_API_KEY")
+                secret = os.getenv("ALPACA_SECRET_KEY")
             if not key or not secret:
                 logger.error("scalp_paper: no Alpaca credentials found in env")
                 return None
-            client = TradingClient(key, secret, paper=True)
-            # Verify connectivity
+            client = TradingClient(key, secret, paper=is_paper)
             acct = client.get_account()
-            logger.info("scalp_paper: connected to Alpaca paper account "
+            mode = "paper" if is_paper else "LIVE"
+            logger.info("scalp_paper: connected to Alpaca %s account "
                         "equity=$%.2f buying_power=$%.2f",
-                        float(acct.equity), float(acct.buying_power))
+                        mode, float(acct.equity), float(acct.buying_power))
             return client
         except Exception as exc:
-            logger.error("scalp_paper: Alpaca paper connection failed: %s", exc)
+            logger.error("scalp_paper: Alpaca connection failed: %s", exc)
             return None
+
+    def _refresh_symbols(self) -> None:
+        """Replace active symbol list with today's top movers from screener."""
+        try:
+            from core.scalp_screener import select_symbol_names
+            fresh = select_symbol_names(top_n=max(len(self._universe), 15))
+            if fresh:
+                # add new symbols to state dict; keep existing state for retained symbols
+                for s in fresh:
+                    if s not in self._state:
+                        self._state[s] = _SymState()
+                self.symbols = fresh
+                logger.info("scalp_paper screener: %d symbols → %s",
+                            len(fresh), fresh[:8])
+                return
+        except Exception as exc:
+            logger.warning("scalp_paper screener failed, keeping universe: %s", exc)
+        self.symbols = list(self._universe)
 
     def _on_new_day(self, date: str) -> None:
         self._today_date = date
         self._today_trades = []
         self._last_ts.clear()
+        self._spy_bars = pd.DataFrame()   # reset regime buffer for new day
+        self._refresh_symbols()
+        self._consec_losses  = {s: 0 for s in self.symbols}
+        self._blocked_today  = set()
+        self._daily_pnl      = {s: 0.0 for s in self.symbols}
+        self._caution_syms   = set()
         for s in self._state.values():
             s.day_bar_count = 0
             s.rth_open = None
             s.current_date = date
-        logger.info("scalp_paper new day %s", date)
+        logger.info("scalp_paper new day %s — %d active symbols", date, len(self.symbols))
+
+    def _record_loss_streak(self, symbol: str, dollar_pnl: float) -> None:
+        import time as _time
+        self._daily_pnl[symbol] = self._daily_pnl.get(symbol, 0.0) + dollar_pnl
+        dpnl = self._daily_pnl[symbol]
+
+        # Tier 2: permanent block
+        if dpnl < -self.loss_block_usd and symbol not in self._blocked_today:
+            self._blocked_today.add(symbol)
+            self._caution_syms.discard(symbol)
+            logger.info("scalp_paper %s BLOCKED (daily loss $%.2f > $%.2f)",
+                        symbol, dpnl, self.loss_block_usd)
+            return
+
+        # Tier 1: direction gate required + half size
+        if dpnl < -self.loss_caution_usd and symbol not in self._blocked_today:
+            self._caution_syms.add(symbol)
+            logger.info("scalp_paper %s caution — daily loss $%.2f, direction gate + 50%% size",
+                        symbol, dpnl)
+
+        # Consecutive loss guard (3 in a row → permanent block)
+        if dollar_pnl < 0:
+            self._consec_losses[symbol] = self._consec_losses.get(symbol, 0) + 1
+            if self._consec_losses[symbol] >= 3 and symbol not in self._blocked_today:
+                self._blocked_today.add(symbol)
+                logger.info("scalp_paper %s blocked (3 consecutive losses)", symbol)
+        else:
+            self._consec_losses[symbol] = 0
 
     # ── tick ──────────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
         today = _today_et()
+        self._refresh_spy_bars()   # update regime buffer before processing symbols
         for symbol in self.symbols:
+            if symbol in self._blocked_today:
+                continue
             try:
                 df = load_bars(symbol, days=5, dsn=self.dsn)
                 if df.empty or len(df) < 51:
@@ -202,6 +280,30 @@ class ScalpPaperEngine:
                 self._process_symbol(symbol, df, today)
             except Exception as exc:
                 logger.debug("scalp_paper %s tick error: %s", symbol, exc)
+
+    def _refresh_spy_bars(self) -> None:
+        """Fetch today's RTH SPY 1-min bars from yfinance for regime detection."""
+        try:
+            import yfinance as yf
+            from zoneinfo import ZoneInfo
+            ET = ZoneInfo("America/New_York")
+            raw = yf.download("SPY", period="1d", interval="1m", progress=False)
+            if raw.empty:
+                return
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.droplevel(1)
+            raw.index = (raw.index.tz_localize("UTC")
+                         if raw.index.tz is None else raw.index.tz_convert("UTC"))
+            et_idx  = raw.index.tz_convert(ET)
+            today   = _today_et()
+            minutes = et_idx.hour * 60 + et_idx.minute
+            date_match = pd.Series(
+                [d.isoformat() for d in et_idx.date], index=raw.index
+            ) == today
+            mask = date_match & (minutes >= 9*60+30) & (minutes <= 15*60+55)
+            self._spy_bars = raw[["Open", "High", "Low", "Close", "Volume"]][mask]
+        except Exception as exc:
+            logger.debug("scalp_paper SPY bars: %s", exc)
 
     def _process_symbol(self, symbol: str, df: pd.DataFrame, today: str) -> None:
         from zoneinfo import ZoneInfo
@@ -235,7 +337,7 @@ class ScalpPaperEngine:
                 state.rth_open      = float(bar["Open"])
             state.day_bar_count += 1
 
-            self._process_bar(symbol, bar, bar_ts, bar_et, ind_row, ind, bar_pos, state, today)
+            self._process_bar(symbol, bar, bar_ts, bar_et, ind_row, ind, bar_pos, state, today, hist_df=df)
 
         self._last_ts[symbol] = new_df.index[-1]
 
@@ -250,6 +352,7 @@ class ScalpPaperEngine:
         bar_pos: int,
         state: _SymState,
         today: str,
+        hist_df: "pd.DataFrame | None" = None,
     ) -> None:
         if any(pd.isna(ind_row.get(k)) for k in _REQUIRED_IND):
             return
@@ -351,24 +454,64 @@ class ScalpPaperEngine:
         bb_long_cond  = close_px <= bb_lower
         bb_short_cond = close_px >= bb_upper
 
+        # Regime gate: SPY VWAP determines intraday direction bias.
+        _regime      = spy_regime(self._spy_bars)
+        _allow_long  = params.sides in ("both", "long_only")  and _regime in ("both", "long_only")
+        _allow_short = params.sides in ("both", "short_only") and _regime in ("both", "short_only")
+
         # ── long signal ───────────────────────────────────────────────────
-        if (params.sides in ("both", "long_only")
+        if (_allow_long
                 and state.long_cd == 0
                 and not long_blocked
                 and rsi < params.rsi_long_thresh
                 and bb_long_cond
                 and vol_ratio >= params.vol_min
                 and is_rev_long and rsi_turn_long):
-            self._enter(symbol, "long", close_px, atr, bar_ts, today)
+            eff_slot = self._gate_slot(symbol, "long", hist_df, ind)
+            if eff_slot > 0:
+                self._enter(symbol, "long", close_px, atr, bar_ts, today, eff_slot)
 
         # ── short signal ──────────────────────────────────────────────────
-        elif (params.sides in ("both", "short_only")
+        elif (_allow_short
                 and state.short_cd == 0
                 and rsi > params.rsi_short_thresh
                 and bb_short_cond
                 and vol_ratio >= params.vol_min
                 and is_rev_short and rsi_turn_short):
-            self._enter(symbol, "short", close_px, atr, bar_ts, today)
+            eff_slot = self._gate_slot(symbol, "short", hist_df, ind)
+            if eff_slot > 0:
+                self._enter(symbol, "short", close_px, atr, bar_ts, today, eff_slot)
+
+    def _gate_slot(self, symbol: str, side: str,
+                   hist_df: "pd.DataFrame | None", ind: "pd.DataFrame") -> int:
+        """Return effective slot size; 0 means direction gate rejected entry."""
+        if symbol not in self._caution_syms:
+            return self.slot_size
+        from core.scalp_direction_gate import direction_gate
+        h = hist_df if hist_df is not None else pd.DataFrame()
+        allowed, reason = direction_gate(
+            symbol, side, h, ind, data_client=self._get_data_client()
+        )
+        logger.info("scalp_paper direction_gate %s %s: %s", symbol, side, reason)
+        if not allowed:
+            return 0
+        return max(1, int(self.slot_size * 0.5))
+
+    def _get_data_client(self):
+        """Lazy-init Alpaca StockHistoricalDataClient for L2/news gate signals."""
+        if hasattr(self, "_data_client_cached"):
+            return self._data_client_cached
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            is_paper = os.getenv("ALPACA_PAPER", "true").lower() not in ("false", "0", "no")
+            key    = (os.getenv("ALPACA_PAPER_KEY") or os.getenv("ALPACA_API_KEY") if is_paper
+                      else os.getenv("ALPACA_API_KEY"))
+            secret = (os.getenv("ALPACA_PAPER_SECRET") or os.getenv("ALPACA_SECRET_KEY") if is_paper
+                      else os.getenv("ALPACA_SECRET_KEY"))
+            self._data_client_cached = StockHistoricalDataClient(key, secret)
+        except Exception:
+            self._data_client_cached = None
+        return self._data_client_cached
 
     # ── order submission ──────────────────────────────────────────────────
 
@@ -380,11 +523,13 @@ class ScalpPaperEngine:
         atr: float,
         bar_ts: Any,
         today: str,
+        slot_size: int | None = None,
     ) -> None:
         from alpaca.trading.requests import MarketOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
-        shares    = max(1, int(self.slot_size / entry_px))
+        effective_slot = slot_size if slot_size is not None else self.slot_size
+        shares    = max(1, int(effective_slot / entry_px))
         stop_px   = (entry_px - atr * self.params.atr_stop_mult   if side == "long"
                      else entry_px + atr * self.params.atr_stop_mult)
         target_px = (entry_px + atr * self.params.atr_target_mult if side == "long"
@@ -411,10 +556,12 @@ class ScalpPaperEngine:
             "qty":        shares,
             "hold":       0,
             "order_id":   order_id,
+            "slot_size":  effective_slot,
         }
+        caution = " [CAUTION 50%]" if effective_slot < self.slot_size else ""
         logger.info(
-            "scalp_paper ENTER %s %s qty=%d entry=%.4f stop=%.4f target=%.4f",
-            symbol, side, shares, entry_px, stop_px, target_px,
+            "scalp_paper ENTER %s %s qty=%d entry=%.4f stop=%.4f target=%.4f%s",
+            symbol, side, shares, entry_px, stop_px, target_px, caution,
         )
 
     def _close(
@@ -431,10 +578,11 @@ class ScalpPaperEngine:
         except Exception as exc:
             logger.error("scalp_paper EXIT FAILED %s: %s", symbol, exc)
 
-        entry  = pos["entry_px"]
-        ret    = ((exit_px - entry) / entry if pos["side"] == "long"
-                  else (entry - exit_px) / entry) * 100.0
-        dollar = ret / 100.0 * self.slot_size
+        entry     = pos["entry_px"]
+        pos_slot  = pos.get("slot_size", self.slot_size)
+        ret       = ((exit_px - entry) / entry if pos["side"] == "long"
+                     else (entry - exit_px) / entry) * 100.0
+        dollar    = ret / 100.0 * pos_slot
         record = {
             "date":        today,
             "symbol":      symbol,
@@ -454,6 +602,7 @@ class ScalpPaperEngine:
         with NDJSON_PATH.open("a") as f:
             f.write(json.dumps(record) + "\n")
         self._today_trades.append(record)
+        self._record_loss_streak(symbol, dollar)
         del self._open[symbol]
 
         if reason == "stop":

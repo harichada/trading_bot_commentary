@@ -41,6 +41,9 @@ from datetime import datetime, timezone
 from core.micro_book import MicroBook
 from typing import Optional, Set, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from core.schwab_bar_cache import SchwabBarCache
+
 
 def _field(record, name, number):
     """A Schwab field by name or numeric id; None when absent OR null."""
@@ -95,10 +98,12 @@ class SchwabQuoteStream:
         account_hash: str,
         quote_cache: "QuoteCache",
         on_raw_message=None,
+        bar_cache: Optional["SchwabBarCache"] = None,
     ) -> None:
         self._client = schwab_client
         self._account_hash = account_hash
         self._cache = quote_cache
+        self._bar_cache = bar_cache
         # v-stream-raw-2026-05-01: optional callback — receives every
         # raw Schwab stream message before any parsing. Engine wires
         # this to ConnectionManager.broadcast so the /stream page can
@@ -116,6 +121,9 @@ class SchwabQuoteStream:
         # _active_symbols and issues subs/unsubs accordingly.
         self._desired_symbols: Set[str] = set()
         self._active_symbols: Set[str] = set()
+        # CHART_EQUITY tracking — mirrors L1 subscription lifecycle.
+        self._chart_active_symbols: Set[str] = set()
+        self._chart_bars_logged: Set[str] = set()   # first-bar INFO sentinel
         self._desired_lock = asyncio.Lock()
         # Health
         self._consecutive_failures: int = 0
@@ -310,6 +318,55 @@ class SchwabQuoteStream:
             # One bad tick must not kill the stream.
             logger.debug("stream _on_message error: %s", exc)
 
+    # ── CHART_EQUITY bar handler ──────────────────────────────────────
+
+    def _on_chart_bar(self, msg) -> None:
+        """Receives completed 1-min bars from Schwab CHART_EQUITY stream.
+
+        Each `msg` is a list of content records. Parses OHLCV +
+        CHART_TIME_MILLIS and writes to SchwabBarCache.
+        """
+        if self._bar_cache is None:
+            return
+        try:
+            F = _SchwabStreamClient.ChartEquityFields
+            for record in msg.get("content", []):
+                sym = record.get("key") or record.get("1")
+                if not sym:
+                    continue
+
+                def _cf(name, num):
+                    v = _field(record, name, num)
+                    return _f(v)
+
+                ts_ms = _field(record, "CHART_TIME_MILLIS", 7)
+                open_  = _cf("OPEN_PRICE", 2)
+                high   = _cf("HIGH_PRICE", 3)
+                low    = _cf("LOW_PRICE", 4)
+                close  = _cf("CLOSE_PRICE", 5)
+                volume = _cf("VOLUME", 6)
+
+                if ts_ms is None or None in (open_, high, low, close, volume):
+                    continue
+
+                self._bar_cache.upsert(
+                    sym, int(ts_ms),
+                    open_=open_, high=high, low=low,
+                    close=close, volume=volume,
+                )
+                if sym not in self._chart_bars_logged:
+                    self._chart_bars_logged.add(sym)
+                    logger.info(
+                        "schwab_bar_cache FIRST bar %s ts_ms=%d c=%.2f",
+                        sym, int(ts_ms), close,
+                    )
+                logger.debug(
+                    "schwab_bar_cache %s bar ts_ms=%d c=%.2f v=%.0f",
+                    sym, int(ts_ms), close, volume,
+                )
+        except Exception as exc:
+            logger.debug("stream _on_chart_bar error: %s", exc)
+
     # ── run loop ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -342,8 +399,11 @@ class SchwabQuoteStream:
 
                 # Bind tick handler exactly once per connection.
                 self._stream.add_level_one_equity_handler(self._on_message)
+                if self._bar_cache is not None:
+                    self._stream.add_chart_equity_handler(self._on_chart_bar)
                 self._handler_attached = True
-                self._active_symbols = set()  # fresh connection → no active subs
+                self._active_symbols = set()       # fresh connection → no active subs
+                self._chart_active_symbols = set() # chart subs also reset on reconnect
 
                 # Reconcile subscriptions and process messages until disconnect.
                 # _serve() requests an EXPANDED set of fields beyond just
@@ -481,6 +541,30 @@ class SchwabQuoteStream:
                             "schwab_stream: unsubscribed -%s (held %ds before unsub)",
                             sorted(to_remove), int(PENDING_UNSUB_HOLDDOWN_SEC),
                         )
+
+                    # ── CHART_EQUITY subscriptions (mirror L1 set + scalp requests) ───
+                    if self._bar_cache is not None:
+                        chart_desired = desired | self._bar_cache.chart_requested_symbols()
+                        chart_to_add = chart_desired - self._chart_active_symbols
+                        chart_to_remove = self._chart_active_symbols - chart_desired
+                        if chart_to_add:
+                            chart_batch = list(chart_to_add)[:MAX_PER_BATCH]
+                            if not self._chart_active_symbols:
+                                await self._stream.chart_equity_subs(chart_batch)
+                                chart_sub_method = "subs"
+                            else:
+                                await self._stream.chart_equity_add(chart_batch)
+                                chart_sub_method = "add"
+                            self._chart_active_symbols |= set(chart_batch)
+                            logger.info(
+                                "schwab_stream: chart_equity %s +%s (%d active)",
+                                chart_sub_method, sorted(chart_batch),
+                                len(self._chart_active_symbols),
+                            )
+                        if chart_to_remove:
+                            await self._stream.chart_equity_unsubs(list(chart_to_remove))
+                            self._chart_active_symbols -= chart_to_remove
+
                 except Exception as exc:
                     logger.debug("schwab_stream: reconcile error: %s", exc)
                 await asyncio.sleep(2.0)
