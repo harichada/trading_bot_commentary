@@ -140,6 +140,12 @@ def _validate_scalp_request(body: dict) -> tuple[list[str], int, ScalpParams, in
             raise HTTPException(400, f"{key}: must be int in [{lo}, {hi}]")
         return v
 
+    end_date = body.get("end_date") or None
+    if end_date is not None:
+        import re as _re
+        if not _re.match(r"^\d{4}-\d{2}-\d{2}$", str(end_date)):
+            raise HTTPException(400, "end_date: must be YYYY-MM-DD")
+
     params = ScalpParams(
         rsi_long_thresh=_flt("rsi_long_thresh", 30.0, 5.0, 50.0),
         rsi_short_thresh=_flt("rsi_short_thresh", 75.0, 50.0, 95.0),
@@ -154,8 +160,10 @@ def _validate_scalp_request(body: dict) -> tuple[list[str], int, ScalpParams, in
         candle_wick_ratio=_flt("candle_wick_ratio", 1.5, 0.5, 10.0),
         entry_confirm=bool(body.get("entry_confirm", False)),
         rsi_turn=bool(body.get("rsi_turn", False)),
+        sides=body.get("sides", "both") if body.get("sides") in ("both", "long_only", "short_only") else "both",
+        from_open_drop_max=_flt("from_open_drop_max", 0.0, 0.0, 20.0),
     )
-    return symbols, days, params, max_slots, capital_usd
+    return symbols, days, params, max_slots, capital_usd, end_date
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +192,7 @@ async def _execute_scalp_run(
     max_slots: int,
     capital_usd: int,
     dsn: str,
+    end_date: str | None = None,
 ) -> None:
     _scalp_state.publish(run_id, {
         "type": "progress",
@@ -201,6 +210,7 @@ async def _execute_scalp_run(
             dsn=dsn,
             max_slots=max_slots,
             capital_usd=capital_usd,
+            end_date=end_date,
         )
         report["run_id"] = run_id
         path = _save_report(report)
@@ -238,7 +248,7 @@ def register(app: FastAPI, dsn: Optional[str] = None) -> None:
 
     @app.post("/api/backtest/scalp/run")
     async def post_scalp_run(body: dict) -> dict:
-        symbols, days, params, max_slots, capital_usd = _validate_scalp_request(body)
+        symbols, days, params, max_slots, capital_usd, end_date = _validate_scalp_request(body)
         run_id = _make_run_id()
         if not await _scalp_state.acquire(run_id):
             raise HTTPException(
@@ -256,6 +266,7 @@ def register(app: FastAPI, dsn: Optional[str] = None) -> None:
             max_slots=max_slots,
             capital_usd=capital_usd,
             dsn=effective_dsn,
+            end_date=end_date,
         ))
         return {"status": "started", "run_id": run_id}
 

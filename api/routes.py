@@ -110,6 +110,8 @@ from api.scalp_shadow_api import register as _register_scalp_shadow
 _register_scalp_shadow(app)
 from api.scalp_paper_api import register as _register_scalp_paper
 _register_scalp_paper(app)
+from api.scalp_live_api import register as _register_scalp_live
+_register_scalp_live(app)
 
 # Global instances
 trading_engine = None

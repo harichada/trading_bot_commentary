@@ -3446,6 +3446,75 @@
                 </table>
             </div>
             </section>
+
+            <!-- Scalp Reversal Shadow Panel -->
+            <section style="margin-bottom:1.5rem;">
+            <div class="card" id="scalp-shadow-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                    <h3 style="margin:0;">⚡ Scalp Reversal Shadow</h3>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span id="scalp-shadow-badge" style="font-size:11px;padding:3px 8px;border-radius:10px;background:#222;color:#666;">LOADING</span>
+                        <select id="ss-sides-select" onchange="setShadowSides(this.value)"
+                                style="font-size:11px;padding:3px 7px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;cursor:pointer;">
+                            <option value="both">Both</option>
+                            <option value="long_only">Longs only</option>
+                            <option value="short_only">Shorts only</option>
+                        </select>
+                        <span id="scalp-shadow-last-update" style="font-size:11px;color:#555;">--</span>
+                        <button onclick="refreshScalpShadow()" style="padding:5px 10px;background:#4a9eff;color:white;border:none;border-radius:3px;cursor:pointer;font-size:12px;">🔄</button>
+                    </div>
+                </div>
+
+                <!-- KPI row -->
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
+                    <div style="background:#0a0a0a;border-radius:8px;padding:12px;text-align:center;">
+                        <div style="font-size:10px;color:#555;margin-bottom:4px;">TRADES TODAY</div>
+                        <div id="ss-n-trades" style="font-size:22px;font-weight:bold;">--</div>
+                    </div>
+                    <div style="background:#0a0a0a;border-radius:8px;padding:12px;text-align:center;">
+                        <div style="font-size:10px;color:#555;margin-bottom:4px;">PNL TODAY</div>
+                        <div id="ss-pnl" style="font-size:22px;font-weight:bold;">--</div>
+                    </div>
+                    <div style="background:#0a0a0a;border-radius:8px;padding:12px;text-align:center;">
+                        <div style="font-size:10px;color:#555;margin-bottom:4px;">WIN RATE</div>
+                        <div id="ss-win-rate" style="font-size:22px;font-weight:bold;">--</div>
+                    </div>
+                    <div style="background:#0a0a0a;border-radius:8px;padding:12px;text-align:center;">
+                        <div style="font-size:10px;color:#555;margin-bottom:4px;">OPEN NOW</div>
+                        <div id="ss-open" style="font-size:22px;font-weight:bold;">--</div>
+                    </div>
+                </div>
+
+                <!-- Open positions -->
+                <div id="ss-open-section" style="display:none;margin-bottom:14px;">
+                    <div style="font-size:11px;color:#555;margin-bottom:6px;">OPEN POSITIONS</div>
+                    <div id="ss-open-list" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+                </div>
+
+                <!-- Completed trades today -->
+                <div>
+                    <div style="font-size:11px;color:#555;margin-bottom:6px;">COMPLETED TRADES TODAY</div>
+                    <div style="overflow-x:auto;">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                        <thead>
+                            <tr style="color:#555;border-bottom:1px solid #222;">
+                                <th style="text-align:left;padding:4px 8px;">Symbol</th>
+                                <th style="text-align:left;padding:4px 8px;">Side</th>
+                                <th style="text-align:left;padding:4px 8px;">Entry</th>
+                                <th style="text-align:left;padding:4px 8px;">Exit</th>
+                                <th style="text-align:right;padding:4px 8px;">Ret%</th>
+                                <th style="text-align:right;padding:4px 8px;">$PnL</th>
+                                <th style="text-align:left;padding:4px 8px;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ss-trades-body">
+                            <tr><td colspan="7" style="text-align:center;color:#444;padding:12px;">No trades yet today</td></tr>
+                        </tbody>
+                    </table>
+                    </div>
+                </div>
+            </div>
+            </section>
         </div>
     </div>
 
@@ -3607,19 +3676,23 @@
                     <div class="backtest-config">
                         <div class="backtest-input-group">
                             <label>Symbols (comma-separated)</label>
-                            <input type="text" id="bt-scalp-symbols" value="NVDA,TSLA,AMD,QQQ,SMCI,IREN,MU" placeholder="NVDA,TSLA,AMD">
+                            <input type="text" id="bt-scalp-symbols" value="NVDA,TSLA,AMD,QQQ,SMCI,IREN,MU,SNAP,LCID,PURR,POET,CIFR,RIVN,NBIS,BE,MRNA,NOK,MARA,AAL" placeholder="NVDA,TSLA,AMD">
                         </div>
                         <div class="backtest-input-group">
-                            <label>Lookback (days)</label>
-                            <input type="number" id="bt-scalp-days" value="90" min="1" max="365">
+                            <label>Start date</label>
+                            <input type="date" id="bt-scalp-start-date">
+                        </div>
+                        <div class="backtest-input-group">
+                            <label>End date</label>
+                            <input type="date" id="bt-scalp-end-date">
                         </div>
                         <div class="backtest-input-group">
                             <label>RSI long threshold</label>
-                            <input type="number" id="bt-scalp-rsi-long" value="30" min="5" max="50" step="1">
+                            <input type="number" id="bt-scalp-rsi-long" value="40" min="5" max="50" step="1">
                         </div>
                         <div class="backtest-input-group">
                             <label>RSI short threshold</label>
-                            <input type="number" id="bt-scalp-rsi-short" value="75" min="50" max="95" step="1">
+                            <input type="number" id="bt-scalp-rsi-short" value="60" min="50" max="95" step="1">
                         </div>
                         <div class="backtest-input-group">
                             <label>Min vol ratio (×avg)</label>
@@ -3627,7 +3700,7 @@
                         </div>
                         <div class="backtest-input-group">
                             <label>Quick exit bars</label>
-                            <input type="number" id="bt-scalp-quick-bars" value="3" min="1" max="30">
+                            <input type="number" id="bt-scalp-quick-bars" value="10" min="1" max="30">
                         </div>
                         <div class="backtest-input-group">
                             <label>Min profit % (quick exit)</label>
@@ -3635,7 +3708,7 @@
                         </div>
                         <div class="backtest-input-group">
                             <label>Max hold bars (timeout)</label>
-                            <input type="number" id="bt-scalp-max-hold" value="15" min="1" max="120">
+                            <input type="number" id="bt-scalp-max-hold" value="10" min="1" max="120">
                         </div>
                         <div class="backtest-input-group">
                             <label>Max concurrent slots</label>
@@ -3657,6 +3730,10 @@
                             <label>ADX max (trend gate, 999=off)</label>
                             <input type="number" id="bt-scalp-adx-max" value="999" min="10" max="999" step="1">
                         </div>
+                        <div class="backtest-input-group">
+                            <label>From-open drop max % (0=off)</label>
+                            <input type="number" id="bt-scalp-from-open-drop" value="0" min="0" max="20" step="0.1" title="Skip longs when stock is down more than this % from RTH open. 0 = disabled.">
+                        </div>
                         <div class="backtest-input-group" style="flex: 0 0 auto;">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
                                 <input type="checkbox" id="bt-scalp-reversal-candle" style="width:16px;height:16px;">
@@ -3674,6 +3751,21 @@
                                 <input type="checkbox" id="bt-scalp-rsi-turn" style="width:16px;height:16px;">
                                 RSI turn — enter only when RSI is extreme AND ticking back (inflection)
                             </label>
+                        </div>
+                        <!-- Sides filter -->
+                        <div style="margin-top:12px;">
+                            <div style="font-size:11px;color:#666;margin-bottom:6px;">SIGNAL SIDES</div>
+                            <div style="display:flex;gap:8px;">
+                                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:5px 10px;border:1px solid #333;border-radius:4px;font-size:12px;background:#111;">
+                                    <input type="radio" name="bt-scalp-sides" value="both" checked> Both
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:5px 10px;border:1px solid #333;border-radius:4px;font-size:12px;background:#111;">
+                                    <input type="radio" name="bt-scalp-sides" value="long_only"> Longs only
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:5px 10px;border:1px solid #333;border-radius:4px;font-size:12px;background:#111;">
+                                    <input type="radio" name="bt-scalp-sides" value="short_only"> Shorts only
+                                </label>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -3775,6 +3867,123 @@
                 evaluations in this process; the decision list is the most recent first. Refreshes every 30 s while open.
             </p>
             <div id="algo-cards" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1rem;"></div>
+
+            <!-- Scalp Reversal Shadow config card -->
+            <div class="card" id="scalp-shadow-config-card" style="margin-top:1.5rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <div>
+                        <b style="font-family:var(--font-mono);">scalp_reversal_shadow</b>
+                        <span style="color:var(--muted-fg);font-size:0.75rem;margin-left:0.4rem;">shadow · paper trading · 1-min intraday</span>
+                    </div>
+                    <span id="ssc-badge" style="font-size:11px;padding:3px 8px;border-radius:10px;background:#14532d;color:#4ade80;">SHADOW</span>
+                </div>
+
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px;">
+                    <!-- Symbols -->
+                    <div style="grid-column:1/-1;">
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">SYMBOLS (comma-separated)</label>
+                        <input id="ssc-symbols" type="text" style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:12px;font-family:monospace;box-sizing:border-box;"
+                               value="TSLA,AMD,SMCI,IREN,SNAP,LCID,PURR,POET,CIFR,RIVN,NBIS,BE,MRNA,NOK,MARA,AAL">
+                    </div>
+                    <!-- RSI thresholds -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">RSI LONG THRESH</label>
+                        <input id="ssc-rsi-long" type="number" step="1" min="5" max="50" value="40"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">RSI SHORT THRESH</label>
+                        <input id="ssc-rsi-short" type="number" step="1" min="50" max="95" value="60"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- Vol -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">VOL MIN (×avg)</label>
+                        <input id="ssc-vol-min" type="number" step="0.1" min="0.5" max="20" value="1.5"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- ATR -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">ATR STOP MULT</label>
+                        <input id="ssc-atr-stop" type="number" step="0.1" min="0.1" max="10" value="1.0"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">ATR TARGET MULT</label>
+                        <input id="ssc-atr-target" type="number" step="0.1" min="0.1" max="20" value="2.0"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- Quick exit -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">QUICK EXIT BARS</label>
+                        <input id="ssc-quick-bars" type="number" step="1" min="1" max="30" value="5"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">MIN PROFIT %</label>
+                        <input id="ssc-min-profit" type="number" step="0.01" min="0.01" max="5" value="0.15"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">MAX HOLD BARS</label>
+                        <input id="ssc-max-hold" type="number" step="1" min="1" max="120" value="3"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- ADX -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">ADX MAX (999=off)</label>
+                        <input id="ssc-adx-max" type="number" step="1" min="10" max="999" value="999"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- Slot size -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">SLOT SIZE ($)</label>
+                        <input id="ssc-slot-size" type="number" step="1000" min="1000" value="100000"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- Max concurrent slots -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">MAX CONCURRENT SLOTS</label>
+                        <input id="ssc-max-slots" type="number" step="1" min="1" max="50" value="3"
+                               style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                    </div>
+                    <!-- Sides -->
+                    <div>
+                        <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">SIGNAL SIDES</label>
+                        <select id="ssc-sides" style="width:100%;padding:6px 10px;background:#111;color:#ccc;border:1px solid #333;border-radius:4px;font-size:13px;box-sizing:border-box;">
+                            <option value="both">Both</option>
+                            <option value="long_only">Longs only</option>
+                            <option value="short_only">Shorts only</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Toggle flags -->
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+                        <input type="checkbox" id="ssc-reversal-candle" checked style="width:14px;height:14px;">
+                        Reversal candle
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+                        <input type="checkbox" id="ssc-entry-confirm" style="width:14px;height:14px;">
+                        Entry confirm
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+                        <input type="checkbox" id="ssc-rsi-turn" style="width:14px;height:14px;">
+                        RSI turn
+                    </label>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <button onclick="saveShadowConfig()" style="padding:7px 20px;background:#4a9eff;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;">
+                        Save Changes
+                    </button>
+                    <button onclick="loadShadowConfig()" style="padding:7px 14px;background:#222;color:#aaa;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:12px;">
+                        ↺ Reload current
+                    </button>
+                    <span id="ssc-status" style="font-size:12px;color:#555;"></span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -3949,6 +4158,7 @@
                 loadBacktestLatest();
             } else if (tabName === 'algorithms') {
                 loadAlgorithms();
+                loadShadowConfig();
             } else if (tabName === 'settings') {
                 loadHandsOffDenylist();
                 loadRiskConsole();
@@ -4718,10 +4928,19 @@
         }
 
         function readScalpForm() {
+            const startVal = document.getElementById('bt-scalp-start-date').value;
+            const endVal   = document.getElementById('bt-scalp-end-date').value;
+            const endDate  = endVal  || new Date().toISOString().slice(0, 10);
+            const startDate = startVal || (() => {
+                const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0, 10);
+            })();
+            const msPerDay = 86400000;
+            const days = Math.max(1, Math.round((new Date(endDate) - new Date(startDate)) / msPerDay));
             return {
                 symbols: document.getElementById('bt-scalp-symbols').value
                     .split(',').map(s => s.trim()).filter(Boolean),
-                days:                    parseInt(document.getElementById('bt-scalp-days').value, 10),
+                days,
+                end_date: endDate,
                 rsi_long_thresh:         parseFloat(document.getElementById('bt-scalp-rsi-long').value),
                 rsi_short_thresh:        parseFloat(document.getElementById('bt-scalp-rsi-short').value),
                 vol_min:                 parseFloat(document.getElementById('bt-scalp-vol-min').value),
@@ -4736,6 +4955,8 @@
                 require_reversal_candle: document.getElementById('bt-scalp-reversal-candle').checked,
                 entry_confirm:           document.getElementById('bt-scalp-entry-confirm').checked,
                 rsi_turn:                document.getElementById('bt-scalp-rsi-turn').checked,
+                sides:                   (document.querySelector('input[name="bt-scalp-sides"]:checked') || {value:'both'}).value,
+                from_open_drop_max:      parseFloat(document.getElementById('bt-scalp-from-open-drop').value) || 0,
             };
         }
 
@@ -6086,6 +6307,188 @@
                 console.error('Error refreshing trades:', error);
             }
         }
+
+        // --- Scalp Reversal Shadow ---
+        async function refreshScalpShadow() {
+            try {
+                const resp = await authFetch('/api/scalp/shadow/status');
+                if (!resp.ok) return;
+                const d = await resp.json();
+                const s = d.summary || {};
+
+                // Sync sides dropdown with engine state
+                const sidesEl = document.getElementById('ss-sides-select');
+                if (sidesEl && d.params && d.params.sides) sidesEl.value = d.params.sides;
+
+                // Badge
+                const badge = document.getElementById('scalp-shadow-badge');
+                if (d.is_rth) {
+                    badge.style.background = '#14532d';
+                    badge.style.color = '#4ade80';
+                    badge.textContent = 'RTH ACTIVE';
+                } else {
+                    badge.style.background = '#1a1a1a';
+                    badge.style.color = '#555';
+                    badge.textContent = 'MARKET CLOSED';
+                }
+
+                // Last update
+                document.getElementById('scalp-shadow-last-update').textContent =
+                    new Date().toLocaleTimeString('en-US', {hour12: false});
+
+                // KPIs
+                document.getElementById('ss-n-trades').textContent = s.n_trades ?? 0;
+
+                const pnlEl = document.getElementById('ss-pnl');
+                const pnl = s.total_pnl ?? 0;
+                pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0});
+                pnlEl.style.color = pnl > 0 ? '#4ade80' : pnl < 0 ? '#f87171' : '#888';
+
+                const wrEl = document.getElementById('ss-win-rate');
+                const wr = s.win_rate_pct ?? 0;
+                wrEl.textContent = wr.toFixed(1) + '%';
+                wrEl.style.color = wr >= 55 ? '#4ade80' : wr >= 45 ? '#facc15' : '#f87171';
+
+                document.getElementById('ss-open').textContent = s.n_open ?? 0;
+
+                // Open positions
+                const openSection = document.getElementById('ss-open-section');
+                const openList = document.getElementById('ss-open-list');
+                const openPos = d.open_positions || [];
+                if (openPos.length > 0) {
+                    openSection.style.display = 'block';
+                    openList.innerHTML = openPos.map(p => {
+                        const color = p.side === 'long' ? '#4ade80' : '#f87171';
+                        const timeStr = p.entry_time ? new Date(p.entry_time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/New_York',hour12:false}) : '--';
+                        return `<div style="background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:8px 12px;font-size:12px;">
+                            <span style="font-weight:bold;">${p.symbol}</span>
+                            <span style="color:${color};margin-left:6px;">${p.side.toUpperCase()}</span>
+                            <span style="color:#555;margin-left:6px;">${timeStr}</span>
+                            <div style="margin-top:4px;color:#888;">
+                                Entry <span style="color:#ccc;">$${p.entry_px.toFixed(2)}</span>
+                                · Stop <span style="color:#f87171;">$${p.stop_px.toFixed(2)}</span>
+                                · Tgt <span style="color:#4ade80;">$${p.target_px.toFixed(2)}</span>
+                                · <span style="color:#facc15;">${p.hold_bars} bars</span>
+                            </div>
+                        </div>`;
+                    }).join('');
+                } else {
+                    openSection.style.display = 'none';
+                }
+
+                // Completed trades table
+                const tbody = document.getElementById('ss-trades-body');
+                const trades = (d.completed_trades || []).slice(0, 25);
+                if (trades.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#444;padding:12px;">No trades yet today</td></tr>';
+                } else {
+                    tbody.innerHTML = trades.map(t => {
+                        const pnlColor = t.dollar_pnl > 0 ? '#4ade80' : t.dollar_pnl < 0 ? '#f87171' : '#888';
+                        const sideColor = t.side === 'long' ? '#4ade80' : '#f87171';
+                        const entryTime = t.entry_time ? new Date(t.entry_time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/New_York',hour12:false}) : '--';
+                        const exitTime  = t.exit_time  ? new Date(t.exit_time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/New_York',hour12:false})  : '--';
+                        const reasonColor = {stop:'#f87171', quick_profit:'#4ade80', target:'#4ade80', timeout:'#888', eod:'#555'}[t.exit_reason] || '#888';
+                        return `<tr style="border-bottom:1px solid #111;">
+                            <td style="padding:4px 8px;font-weight:bold;">${t.symbol}</td>
+                            <td style="padding:4px 8px;color:${sideColor};">${t.side}</td>
+                            <td style="padding:4px 8px;color:#888;">${entryTime}</td>
+                            <td style="padding:4px 8px;color:#888;">${exitTime}</td>
+                            <td style="padding:4px 8px;text-align:right;color:${pnlColor};">${(t.return_pct >= 0 ? '+' : '')}${t.return_pct.toFixed(3)}%</td>
+                            <td style="padding:4px 8px;text-align:right;color:${pnlColor};">${t.dollar_pnl >= 0 ? '+$' : '-$'}${Math.abs(t.dollar_pnl).toFixed(0)}</td>
+                            <td style="padding:4px 8px;color:${reasonColor};">${t.exit_reason}</td>
+                        </tr>`;
+                    }).join('');
+                }
+            } catch(e) {
+                console.error('scalp shadow refresh failed:', e);
+            }
+        }
+
+        async function loadShadowConfig() {
+            try {
+                const resp = await authFetch('/api/scalp/shadow/status');
+                if (!resp.ok) return;
+                const d = await resp.json();
+                const p = d.params || {};
+                // Fill inputs
+                if (d.symbols) document.getElementById('ssc-symbols').value = d.symbols.join(',');
+                if (p.rsi_long_thresh  != null) document.getElementById('ssc-rsi-long').value   = p.rsi_long_thresh;
+                if (p.rsi_short_thresh != null) document.getElementById('ssc-rsi-short').value  = p.rsi_short_thresh;
+                if (p.vol_min          != null) document.getElementById('ssc-vol-min').value     = p.vol_min;
+                if (p.atr_stop_mult    != null) document.getElementById('ssc-atr-stop').value   = p.atr_stop_mult;
+                if (p.atr_target_mult  != null) document.getElementById('ssc-atr-target').value = p.atr_target_mult;
+                if (p.quick_exit_bars  != null) document.getElementById('ssc-quick-bars').value  = p.quick_exit_bars;
+                if (p.min_profit_pct   != null) document.getElementById('ssc-min-profit').value  = p.min_profit_pct;
+                if (p.max_hold_bars    != null) document.getElementById('ssc-max-hold').value    = p.max_hold_bars;
+                if (p.adx_max          != null) document.getElementById('ssc-adx-max').value     = p.adx_max;
+                if (p.sides            != null) document.getElementById('ssc-sides').value       = p.sides;
+                if (p.require_reversal_candle != null) document.getElementById('ssc-reversal-candle').checked = p.require_reversal_candle;
+                if (p.entry_confirm    != null) document.getElementById('ssc-entry-confirm').checked = p.entry_confirm;
+                if (p.rsi_turn         != null) document.getElementById('ssc-rsi-turn').checked  = p.rsi_turn;
+                if (d.slot_size        != null) document.getElementById('ssc-slot-size').value   = d.slot_size;
+                if (d.max_slots        != null) document.getElementById('ssc-max-slots').value   = d.max_slots;
+                document.getElementById('ssc-status').textContent = 'Loaded ' + new Date().toLocaleTimeString('en-US',{hour12:false});
+            } catch(e) { document.getElementById('ssc-status').textContent = 'Load failed: ' + e.message; }
+        }
+
+        async function saveShadowConfig() {
+            const statusEl = document.getElementById('ssc-status');
+            statusEl.textContent = 'Saving…';
+            const symbolsRaw = document.getElementById('ssc-symbols').value;
+            const symbols = symbolsRaw.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+            const body = {
+                rsi_long_thresh:         parseFloat(document.getElementById('ssc-rsi-long').value),
+                rsi_short_thresh:        parseFloat(document.getElementById('ssc-rsi-short').value),
+                vol_min:                 parseFloat(document.getElementById('ssc-vol-min').value),
+                atr_stop_mult:           parseFloat(document.getElementById('ssc-atr-stop').value),
+                atr_target_mult:         parseFloat(document.getElementById('ssc-atr-target').value),
+                quick_exit_bars:         parseInt(document.getElementById('ssc-quick-bars').value, 10),
+                min_profit_pct:          parseFloat(document.getElementById('ssc-min-profit').value),
+                max_hold_bars:           parseInt(document.getElementById('ssc-max-hold').value, 10),
+                adx_max:                 parseFloat(document.getElementById('ssc-adx-max').value),
+                sides:                   document.getElementById('ssc-sides').value,
+                require_reversal_candle: document.getElementById('ssc-reversal-candle').checked,
+                entry_confirm:           document.getElementById('ssc-entry-confirm').checked,
+                rsi_turn:                document.getElementById('ssc-rsi-turn').checked,
+                slot_size:               parseInt(document.getElementById('ssc-slot-size').value, 10),
+                max_slots:               parseInt(document.getElementById('ssc-max-slots').value, 10),
+                symbols,
+            };
+            try {
+                const resp = await authFetch('/api/scalp/shadow/config', {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    statusEl.textContent = 'Error: ' + (err.detail || resp.status);
+                    return;
+                }
+                statusEl.textContent = '✓ Saved ' + new Date().toLocaleTimeString('en-US',{hour12:false});
+                statusEl.style.color = '#4ade80';
+                setTimeout(() => { statusEl.style.color = '#555'; }, 3000);
+            } catch(e) {
+                statusEl.textContent = 'Save failed: ' + e.message;
+                statusEl.style.color = '#f87171';
+            }
+        }
+
+        async function setShadowSides(sides) {
+            try {
+                const resp = await authFetch('/api/scalp/shadow/config', {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({sides}),
+                });
+                if (resp.ok) await refreshScalpShadow();
+            } catch(e) { console.error('setShadowSides failed:', e); }
+        }
+
+        // Auto-refresh every 60 s
+        setInterval(refreshScalpShadow, 60_000);
+        // Initial load after 2 s (let page settle)
+        setTimeout(refreshScalpShadow, 2000);
         
         async function requestClosePosition(symbol, positionType) {
             // Disable all close buttons temporarily
@@ -6211,6 +6614,14 @@
                 autoColorSigns();
                 const obs = new MutationObserver(scheduleAutoColor);
                 obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+                // Seed scalp backtest date range: default end=today, start=90 days ago
+                const today = new Date().toISOString().slice(0, 10);
+                const ago90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+                const startEl = document.getElementById('bt-scalp-start-date');
+                const endEl   = document.getElementById('bt-scalp-end-date');
+                if (startEl) { startEl.value = ago90; startEl.max = today; }
+                if (endEl)   { endEl.value   = today; endEl.max  = today; }
             });
         }
 

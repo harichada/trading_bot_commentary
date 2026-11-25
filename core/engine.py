@@ -4218,11 +4218,13 @@ class TradingEngineWithCommentary:
                     )
                 except Exception as exc:
                     logger.debug(f"_publish_raw failed: {exc}")
+            from core.schwab_bar_cache import SchwabBarCache
             self._schwab_quote_stream = SchwabQuoteStream(
                 schwab_client=self.schwab_client,
                 account_hash=self.account_hash,
                 quote_cache=self.quote_cache,
                 on_raw_message=_publish_raw,
+                bar_cache=SchwabBarCache.instance(),
             )
             # v-pricebook-2026-05-01: bridge PriceBook subscription
             # changes to the stream. When position_loop / watchlist /
